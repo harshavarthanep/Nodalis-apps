@@ -10305,6 +10305,163 @@ html[data-script='complex'] .menu-item { min-height: 38px; height: auto; }
   #nd-guest-stack { width: calc(100vw - var(--sp-4) * 2); }
 }
 
+
+/* ===== v10.8: a canvas, attached to the thing it belongs to ===== */
+
+.cvchip {
+  display: inline-flex; align-items: center; gap: 4px;
+  flex: none;
+  max-width: 100%;
+  min-width: 0;
+  height: 24px;
+  padding: 0 3px 0 7px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-pill);
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+  color: var(--text-2);
+  font-size: var(--text-xs);
+  line-height: 1;
+  vertical-align: middle;
+}
+.cvchip svg { color: var(--accent); flex: none; }
+.cvchip-name {
+  min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+.cvchip.is-compact { padding: 0 3px; }
+.cvchip.is-missing {
+  background: color-mix(in srgb, #e0245e 9%, transparent);
+  border-color: color-mix(in srgb, #e0245e 34%, var(--border));
+}
+.cvchip.is-missing svg { color: #e0245e; }
+.cvchip-btn {
+  flex: none;
+  width: 20px; height: 20px;
+  display: inline-flex; align-items: center; justify-content: center;
+  border: 0; background: transparent; padding: 0;
+  border-radius: var(--r-pill);
+  color: var(--text-2);
+  cursor: pointer;
+}
+.cvchip-btn:hover, .cvchip-btn:focus-visible {
+  background: var(--bg-0);
+  color: var(--text-0);
+}
+.cvchip-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.cvchip-eye svg { color: inherit; }
+/* A finger needs more than 20px, and the chip grows to match rather than the
+   button spilling out of it. */
+@media (hover: none) {
+  .cvchip { height: 30px; padding-right: 2px; }
+  .cvchip-btn { width: 28px; height: 28px; }
+}
+
+/* --- the preview dialog --- */
+.cvprev { display: flex; flex-direction: column; gap: var(--sp-4); min-width: 0; }
+.cvprev-meta {
+  display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
+  font-size: var(--text-xs); color: var(--text-2);
+}
+.cvprev-dot { color: var(--text-3); }
+.cvprev-stage {
+  display: flex; align-items: center; justify-content: center;
+  min-height: 220px;
+  max-height: min(62vh, 620px);
+  padding: var(--sp-3);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md, 12px);
+  background: var(--bg-1);
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+.cvprev-img {
+  display: block;
+  max-width: 100%;
+  max-height: min(58vh, 580px);
+  width: auto; height: auto;
+  border-radius: var(--r-sm, 8px);
+  box-shadow: var(--shadow-sm, 0 1px 3px rgba(0, 0, 0, 0.14));
+  background: #fff;
+}
+.cvprev-loading, .cvprev-empty {
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: var(--sp-3);
+  color: var(--text-3);
+  font-size: var(--text-sm);
+  text-align: center;
+  padding: var(--sp-6) var(--sp-4);
+}
+.cvprev-empty svg { color: var(--text-3); }
+@media (max-width: 520px) {
+  .cvprev-stage { min-height: 160px; padding: var(--sp-2, 6px); }
+}
+
+/* The note header carries the chip beside the share state, and has to be
+   allowed to give it room rather than squeezing the title to nothing. */
+.editor-actions .cvchip { margin-right: 2px; }
+@media (max-width: 620px) {
+  .editor-actions .cvchip .cvchip-name { display: none; }
+}
+/* On a sticky the chip sits in the head, which is 22px of vertical space. */
+.sticky-head .cvchip { height: 19px; padding: 0 2px 0 5px; font-size: 10px; }
+.sticky-head .cvchip .cvchip-name { display: none; }
+.sticky-head .cvchip-btn { width: 17px; height: 17px; }
+/* And in a task's meta row, in line with the due date and the tags. */
+.task-meta .cvchip { height: 22px; }
+
+/* ===== v10.8: two touch targets that missed the 30px floor =====
+ *
+ * Measured on a 390x844 phone, in the audit that clicks every button in
+ * every view: the task checkbox came out 28px tall and the calendar's legend
+ * chips 18px. Everything else in the app already clears it.
+ */
+@media (hover: none), (max-width: 620px) {
+  .task-check { width: 34px; height: 34px; }
+  .cal-legend-chip { min-height: 32px; padding-top: 4px; padding-bottom: 4px; }
+}
+
+/* ===== v10.8: a board can point at a sticky and at a task ===== */
+.canvas-item[data-kind='stickyref'] .canvas-item-body,
+.canvas-item[data-kind='taskref'] .canvas-item-body {
+  cursor: default;
+  font-size: 12px;
+  line-height: 1.45;
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+.canvas-ref-body { display: flex; flex-direction: column; gap: 3px; }
+.canvas-ref-text { white-space: pre-wrap; overflow-wrap: anywhere; }
+.canvas-ref-todo { display: flex; align-items: flex-start; gap: 6px; }
+.canvas-ref-todo.is-done { color: var(--text-3); text-decoration: line-through; }
+.canvas-ref-box {
+  flex: none;
+  width: 13px; height: 13px; margin-top: 2px;
+  display: inline-flex; align-items: center; justify-content: center;
+  border: 1px solid currentColor;
+  border-radius: 3px;
+  font-size: 10px; line-height: 1;
+  opacity: 0.75;
+}
+.canvas-ref-where {
+  margin-top: 4px;
+  font-size: 10px;
+  color: var(--text-3);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
+/* v10.8: the sticky a canvas card just sent you to says "here I am". */
+.sticky-note.is-found {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+  animation: nd-found calc(1200ms * var(--motion-scale)) var(--ease-out) 1;
+}
+@keyframes nd-found {
+  0%   { box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent) 60%, transparent); }
+  60%  { box-shadow: 0 0 0 12px color-mix(in srgb, var(--accent) 0%, transparent); }
+  100% { box-shadow: none; }
+}
+
 </style>
 </head>
 
@@ -10532,6 +10689,8 @@ html[data-script='complex'] .menu-item { min-height: 38px; height: auto; }
             <button class="icon-btn" data-add="shape" title="Add shape (R)"><span data-icon="shapes" data-icon-size="18"></span></button>
             <button class="icon-btn" data-add="frame" title="Add frame (F)"><span data-icon="layout" data-icon-size="18"></span></button>
             <button class="icon-btn" data-add="noteref" title="Embed a note (N)"><span data-icon="link" data-icon-size="18"></span></button>
+            <button class="icon-btn" data-add="stickyref" title="Embed a sticky note"><span data-icon="sticky" data-icon-size="18"></span></button>
+            <button class="icon-btn" data-add="taskref" title="Embed a task"><span data-icon="list-check" data-icon-size="18"></span></button>
             <button class="icon-btn" data-add="image" title="Add image (I)"><span data-icon="image" data-icon-size="18"></span></button>
             <span class="topbar-divider"></span>
             <button class="icon-btn" data-z="front" title="Bring to front (])"><span data-icon="layers" data-icon-size="18"></span></button>
@@ -10782,9 +10941,9 @@ https://github.com/nodeca/pako/blob/main/LICENSE
 (function (N) {
   'use strict';
 
-  N.version = '10.7.0';
-  N.versionName = 'v10.7';
-  N.built = '2026-09-05';
+  N.version = '10.8.0';
+  N.versionName = 'v10.8';
+  N.built = '2026-09-07';
 
   /** "v8.0.0" - what goes on screen. */
   N.versionLabel = function () { return 'v' + N.version; };
@@ -14788,8 +14947,12 @@ https://github.com/nodeca/pako/blob/main/LICENSE
     smartLists: true,
     tabSize: 2,
     showLineNumbers: false,
-    typewriterMode: false,
-    focusMode: false,
+    /*
+     * v10.8: `typewriterMode` was here and nothing read it - see settings.js.
+     * `focusMode` was here too, declared a SECOND time: it is already up in
+     * the appearance block above, and a repeated key in one object literal is
+     * a bug waiting for the two values to disagree.
+     */
 
     /* behaviour */
     autoSaveDelay: 400,
@@ -14993,6 +15156,22 @@ https://github.com/nodeca/pako/blob/main/LICENSE
     if (typeof s.lineHeight !== 'number' || s.lineHeight < 1.1 || s.lineHeight > 2.6) s.lineHeight = 1.7;
     if (!s.visibleViews || typeof s.visibleViews !== 'object') s.visibleViews = U.deepClone(DEFAULT_SETTINGS.visibleViews);
     if (!s.keymap || typeof s.keymap !== 'object') s.keymap = {};
+    /*
+     * v10.8: ONE-TIME CARRY-OVER FOR THE DEAD TYPEWRITER SWITCH.
+     *
+     * Settings has had two rows called "Typewriter scrolling" in one section.
+     * The one that has now gone wrote `typewriterMode`, which nothing in the
+     * app ever read - so a vault can hold `typewriterMode: true` from a
+     * switch that looked like it did something and did not.
+     *
+     * Turning the real setting on for those people is the difference between
+     * "they removed my setting" and "it finally works". Then the dead key is
+     * dropped, so this runs once and never again.
+     */
+    if (s.typewriterMode !== undefined) {
+      if (s.typewriterMode === true && s.typewriter !== true) s.typewriter = true;
+      delete s.typewriterMode;
+    }
     return s;
   }
 
@@ -22703,6 +22882,12 @@ https://github.com/nodeca/pako/blob/main/LICENSE
     if (focusBtn) focusBtn.addEventListener('click', function () { N.commands.run('view.focusMode'); });
 
     bus.on('note:active', function (note) { loadNote(note); });
+    /* v10.8: the chip has to appear when the link is made, from wherever
+       it was made - the note menu, the command palette, or a task that
+       shares this note's board. One listener beats a call at every call
+       site, and it also catches a board being renamed or deleted. */
+    bus.on('cvlink:changed', function () { renderCanvasChip(); });
+    bus.on('vault:changed', U.debounce(function () { renderCanvasChip(); }, 120));
     bus.on('vault:changed', U.debounce(function () {
       if (currentId && !N.store.state.notes.has(currentId)) loadNote(null);
     }, 60));
@@ -22773,6 +22958,35 @@ https://github.com/nodeca/pako/blob/main/LICENSE
   function renderTitle() {
     const note = current();
     titleInput.value = note ? N.store.noteTitle(note) : '';
+    renderCanvasChip();
+  }
+
+  /**
+   * v10.8: the linked canvas, shown beside the share state.
+   *
+   * Rebuilt rather than updated: the chip is three elements and a title, and
+   * a rebuild cannot leave a stale name behind after the board is renamed.
+   */
+  function renderCanvasChip() {
+    const actions = document.querySelector('.editor-actions');
+    if (!actions) return;
+    const old = actions.querySelector('.cvchip');
+    if (old) old.remove();
+    if (!N.cvlink) return;
+    const note = current();
+    /*
+     * Rendered whenever the note CARRIES a link, even when the board
+     * behind it has been deleted - the chip then says \'Canvas deleted\'
+     * and offers to remove it. A note quietly holding a dead reference is
+     * worse than a note that tells you about it.
+     */
+    const id = note ? N.cvlink.ofNote(note) : null;
+    if (!id) return;
+    const chip = N.cvlink.chip(id, {
+      fromLabel: N.store.noteTitle(note),
+      onClear: function () { N.cvlink.setOnNote(note, null).then(renderCanvasChip); },
+    });
+    actions.insertBefore(chip, actions.firstChild);
   }
 
   function current() { return currentId ? N.store.getNote(currentId) : null; }
@@ -22806,23 +23020,63 @@ https://github.com/nodeca/pako/blob/main/LICENSE
     retryTimer = setTimeout(function () { doSave(); }, wait);
   }
 
+  /*
+   * v10.8: A NEWER SAVE MUST NOT MAKE AN OLDER ONE LOOK LIKE A FAILURE.
+   *
+   * This is the "sometimes the app crashes" report, and it is a false alarm
+   * that ends in a red permanent toast telling you to copy your text
+   * somewhere safe.
+   *
+   * doSave() captures the text, awaits the write, then verifies that the
+   * store holds exactly that text. Two saves for the same note can be in
+   * flight at once - typing schedules one on a 400ms debounce, and switching
+   * notes calls flushSave() which starts another immediately - and the
+   * newer one usually lands first because it has less to do. The older one
+   * then wakes up, compares its text against the NEWER text, and throws.
+   *
+   * Measured, switching between two notes while typing on a phone:
+   *
+   *   NDSAVE MISMATCH wanted 18 got 19  tail(wanted)="...note\nyy"
+   *                                     tail(got)   ="...note\nyyy"
+   *   [editor] save failed (attempt 1) Error: The browser did not keep the change.
+   *   ... attempts 2, 3, 4, 5 ...
+   *   then: "Could not save - your text is still on screen, copy it
+   *          somewhere safe."
+   *
+   * Nothing failed. The verification was comparing against a moving target.
+   *
+   * So each save now takes a ticket for its note. If a newer ticket exists
+   * by the time this one returns, this save has been superseded: it is a
+   * success that no longer speaks for the note, so it neither throws nor
+   * touches the dirty flag. The check still catches what it was written for -
+   * a private window that accepts the write and drops the row - because in
+   * that case there IS no newer ticket and the content really is missing.
+   */
+  let saveTicket = 0;
+  const latestTicket = new Map();
+
   async function doSave() {
     if (!currentId || !dirty) return;
     const note = current();
     if (!note) { setDirty(false); return; }
     const id = currentId;
     const text = ta.value;
+    const ticket = ++saveTicket;
+    latestTicket.set(id, ticket);
     saving = true;
     setDirty(true);
     try {
       await N.store.updateNoteContent(id, text);
 
-      // Verify rather than assume. A private window can accept the promise and
-      // drop the row; if the note in the store does not carry what we just
-      // typed, the save did not happen and we must keep the dirty flag set.
-      const back = N.store.getNote(id);
-      if (!back || back.content !== text) {
-        throw new Error('The browser did not keep the change.');
+      const superseded = latestTicket.get(id) !== ticket;
+      if (!superseded) {
+        // Verify rather than assume. A private window can accept the promise
+        // and drop the row; if the note in the store does not carry what we
+        // just typed, the save did not happen.
+        const back = N.store.getNote(id);
+        if (!back || back.content !== text) {
+          throw new Error('The browser did not keep the change.');
+        }
       }
 
       saving = false;
@@ -22830,6 +23084,21 @@ https://github.com/nodeca/pako/blob/main/LICENSE
       clearTimeout(retryTimer);
       retryTimer = null;
       N.toast.dismiss('save-fail');
+      /*
+       * v8 BUG FIX: THE EDITOR COULD GET STUCK ON "UNSAVED" FOR EVER.
+       *
+       * `dirty` is one flag for the editor, not one per note. A save can only
+       * speak for the note it belongs to: if we have navigated away, this
+       * result says nothing about what is on screen now.
+       *
+       * v10.8: but the pip still has to be REPAINTED, because setDirty() is
+       * what draws it and the last thing it drew said "Saving…". Leaving that
+       * word on screen for the rest of the session is how a finished save
+       * came to look like a stuck one.
+       */
+      if (currentId === id) setDirty(ta.value !== text);
+      else setDirty(dirty);
+      if (!superseded) updateWordCount(N.store.getNote(id));
       /*
        * v8 BUG FIX: THE EDITOR COULD GET STUCK ON "UNSAVED" FOR EVER.
        *
@@ -22853,8 +23122,6 @@ https://github.com/nodeca/pako/blob/main/LICENSE
        * away, this result says nothing about what is on screen now, so it must
        * not touch the flag at all.
        */
-      if (currentId === id) setDirty(ta.value !== text);
-      updateWordCount(N.store.getNote(id));
     } catch (err) {
       saving = false;
       saveAttempt++;
@@ -23913,6 +24180,13 @@ https://github.com/nodeca/pako/blob/main/LICENSE
         onClick: function () { if (N.notemeta) N.notemeta.setGoal(note); } },
       { label: 'Insert a template here…', icon: 'file-text',
         onClick: function () { if (N.templates) N.templates.pick('insert'); } },
+      /* v10.8: the board this note came out of, previewable without leaving
+         the note. Stored in frontmatter, so it goes to disk with the file. */
+      ].concat(N.cvlink ? N.cvlink.menuItems({
+        name: N.store.noteTitle(note),
+        get: function () { return N.cvlink.ofNote(note); },
+        set: async function (id) { await N.cvlink.setOnNote(note, id); renderCanvasChip(); },
+      }) : []).concat([
       { separator: true },
       { label: 'Copy link to note', icon: 'link', onClick: function () { N.commands.run('note.copyLink'); } },
       { label: 'Copy as markdown', icon: 'copy', onClick: function () { N.commands.run('note.copyMarkdown'); } },
@@ -23941,7 +24215,7 @@ https://github.com/nodeca/pako/blob/main/LICENSE
         onClick: function () { N.commands.run('tools.open'); } },
       { separator: true },
       { label: 'Delete note', icon: 'trash', danger: true, onClick: function () { N.commands.run('note.delete'); } },
-    ], { anchor: anchor, align: 'right', title: N.store.noteTitle(note), allowSheet: true });
+    ]), { anchor: anchor, align: 'right', title: N.store.noteTitle(note), allowSheet: true });
   }
 
   /* ------------------------------------------------------------- commands */
@@ -25348,6 +25622,25 @@ https://github.com/nodeca/pako/blob/main/LICENSE
       if (!noteId) return;
       base.noteId = noteId;
       base.w = 240; base.h = 170;
+    } else if (kind === 'stickyref') {
+      /*
+       * v10.8: A BOARD CAN POINT AT A STICKY AND AT A TASK, NOT ONLY A NOTE.
+       *
+       * Embedding a note has been here since the canvas shipped, and the two
+       * other things this app keeps loose thoughts in could not be reached
+       * from a board at all. Same shape as noteref: the board holds only an
+       * id, the card shows the live text, and double-clicking goes to the
+       * real thing. Nothing is copied, so nothing can go stale.
+       */
+      const stickyId = await pickSticky();
+      if (!stickyId) return;
+      base.stickyId = stickyId;
+      base.w = 200; base.h = 160;
+    } else if (kind === 'taskref') {
+      const taskId = await pickTask();
+      if (!taskId) return;
+      base.taskId = taskId;
+      base.w = 240; base.h = 120;
     } else if (kind === 'image') {
       const file = await pickImageFile();
       if (!file) return;
@@ -25391,6 +25684,101 @@ https://github.com/nodeca/pako/blob/main/LICENSE
       .map(function (n) { return { value: n.id, label: N.store.noteTitle(n), description: n.folder || 'Vault root', icon: 'note' }; });
     if (!notes.length) { N.toast.info('Create a note first, then you can embed it here.'); return Promise.resolve(null); }
     return N.modal.choose({ title: 'Embed which note?', options: notes });
+  }
+
+  /* v10.8: the pickers for the two new reference kinds. */
+
+  function stickyLabel(sticky) {
+    if (!sticky) return 'Sticky';
+    if (sticky.kind === 'todo') {
+      const items = Array.isArray(sticky.items) ? sticky.items : [];
+      const first = items.filter(function (i) { return i && i.text; })[0];
+      const done = items.filter(function (i) { return i && i.done; }).length;
+      return (first ? String(first.text) : 'Checklist') + (items.length ? '  ' + done + '/' + items.length : '');
+    }
+    if (sticky.kind === 'draw') return 'Sketch';
+    const t = String(sticky.text || '').replace(/\s+/g, ' ').trim();
+    return t || 'Empty sticky';
+  }
+
+  function pickSticky() {
+    let list = [];
+    try { list = Array.from(N.store.state.stickies.values()); } catch (err) { list = []; }
+    const options = list
+      .sort(function (a, b) { return (b.updatedAt || b.createdAt || 0) - (a.updatedAt || a.createdAt || 0); })
+      .slice(0, 60)
+      .map(function (s) {
+        return { value: s.id, icon: s.kind === 'todo' ? 'list-check' : (s.kind === 'draw' ? 'pen' : 'sticky'),
+          label: U.truncate(stickyLabel(s), 46),
+          description: s.kind === 'todo' ? 'Checklist' : (s.kind === 'draw' ? 'Sketch' : 'Sticky note') };
+      });
+    if (!options.length) {
+      N.toast.info('Add a sticky on the Sticky wall first, then you can put it here.', { ms: 3600 });
+      return Promise.resolve(null);
+    }
+    return N.modal.choose({ title: 'Which sticky?', options: options });
+  }
+
+  function allTasksForPicker() {
+    const out = [];
+    try {
+      N.store.state.tasks.forEach(function (t) {
+        out.push({ id: t.id, text: t.text, done: !!t.done, where: 'Task list', source: 'standalone' });
+      });
+    } catch (err) { /* no tasks store yet */ }
+    try {
+      N.store.allNotes().forEach(function (note) {
+        if (!note.taskCounts || !note.taskCounts.total) return;
+        N.serialize.extractTasks(note.content).forEach(function (t) {
+          out.push({ id: note.id + ':' + t.line, text: t.text, done: !!t.done,
+            where: N.store.noteTitle(note), source: 'note' });
+        });
+      });
+    } catch (err) { /* a note that will not parse simply offers no tasks */ }
+    return out;
+  }
+
+  function pickTask() {
+    const list = allTasksForPicker();
+    const options = list.slice(0, 80).map(function (t) {
+      return { value: t.id, icon: t.done ? 'check' : 'list-check',
+        label: U.truncate(String(t.text || '(empty task)').replace(/\s+/g, ' ').trim(), 46),
+        description: (t.done ? 'Done · ' : '') + t.where };
+    });
+    if (!options.length) {
+      N.toast.info('Write a task first - a "- [ ] " line in a note, or one in the Tasks view.', { ms: 3800 });
+      return Promise.resolve(null);
+    }
+    return N.modal.choose({ title: 'Which task?', options: options });
+  }
+
+  /** The live text behind a taskref, wherever that task lives. */
+  function taskById(id) {
+    if (!id) return null;
+    const str = String(id);
+    const cut = str.lastIndexOf(':');
+    if (cut > 0) {
+      const noteId = str.slice(0, cut);
+      const line = Number(str.slice(cut + 1));
+      const note = N.store.getNote(noteId);
+      if (!note) return null;
+      let found = null;
+      try {
+        N.serialize.extractTasks(note.content).forEach(function (t) {
+          if (t.line === line) found = { text: t.text, done: !!t.done, where: N.store.noteTitle(note), noteId: noteId };
+        });
+      } catch (err) { return null; }
+      return found;
+    }
+    let rec = null;
+    try { rec = N.store.state.tasks.get(str); } catch (err) { rec = null; }
+    if (!rec) return null;
+    return { text: rec.text, done: !!rec.done, where: 'Task list', noteId: null };
+  }
+
+  function stickyById(id) {
+    if (!id) return null;
+    try { return N.store.state.stickies.get(String(id)) || null; } catch (err) { return null; }
   }
 
   function pickImageFile() {
@@ -25491,6 +25879,51 @@ https://github.com/nodeca/pako/blob/main/LICENSE
       } else {
         body.appendChild(el('span.dim.small', null, 'This note no longer exists.'));
       }
+    } else if (item.kind === 'stickyref') {
+      /* v10.8: the sticky's own text and colour, read-only, live. */
+      const sticky = stickyById(item.stickyId);
+      if (sticky) {
+        node.style.background = sticky.color || STICKY_COLORS[0];
+        body.classList.add('canvas-ref-body');
+        if (sticky.kind === 'todo') {
+          const items = Array.isArray(sticky.items) ? sticky.items : [];
+          if (!items.length) body.appendChild(el('span.dim.small', null, 'Empty checklist'));
+          items.slice(0, 8).forEach(function (t) {
+            const row = el('div.canvas-ref-todo' + (t && t.done ? '.is-done' : ''));
+            row.appendChild(el('span.canvas-ref-box', null, t && t.done ? '✓' : ''));
+            row.appendChild(el('span', null, String((t && t.text) || '')));
+            body.appendChild(row);
+          });
+          if (items.length > 8) body.appendChild(el('span.dim.small', null, '+ ' + (items.length - 8) + ' more'));
+        } else if (sticky.kind === 'draw') {
+          body.appendChild(el('span.dim.small', null, 'Sketch — open the wall to see it'));
+        } else {
+          body.appendChild(el('div.canvas-ref-text', null, String(sticky.text || '')));
+        }
+        body.addEventListener('dblclick', function () {
+          N.app.setView('sticky');
+          if (N.sticky && N.sticky.focusOn) N.sticky.focusOn(sticky.id);
+        });
+      } else {
+        body.appendChild(el('span.dim.small', null, 'This sticky no longer exists.'));
+      }
+    } else if (item.kind === 'taskref') {
+      /* v10.8: the task, ticked or not, wherever it lives. */
+      const task = taskById(item.taskId);
+      if (task) {
+        body.classList.add('canvas-ref-body');
+        const row = el('div.canvas-ref-todo' + (task.done ? '.is-done' : ''));
+        row.appendChild(el('span.canvas-ref-box', null, task.done ? '✓' : ''));
+        row.appendChild(el('span', null, String(task.text || '(empty task)')));
+        body.appendChild(row);
+        body.appendChild(el('div.canvas-ref-where', null, task.where));
+        body.addEventListener('dblclick', function () {
+          if (task.noteId) N.app.openNote(task.noteId);
+          else N.app.setView('tasks');
+        });
+      } else {
+        body.appendChild(el('span.dim.small', null, 'This task no longer exists.'));
+      }
     } else if (item.kind === 'image') {
       const img = el('img', { alt: '' });
       N.db.get('attachments', item.attachmentId).then(function (row) {
@@ -25553,10 +25986,12 @@ https://github.com/nodeca/pako/blob/main/LICENSE
   }
 
   function labelFor(kind) {
-    return { card: 'Card', sticky: 'Sticky', frame: 'Frame', noteref: 'Note', text: 'Text', image: 'Image' }[kind] || kind;
+    return { card: 'Card', sticky: 'Sticky', frame: 'Frame', noteref: 'Note',
+      stickyref: 'Sticky note', taskref: 'Task', text: 'Text', image: 'Image' }[kind] || kind;
   }
   function iconFor(kind) {
-    return { card: 'note', sticky: 'sticky', frame: 'layout', noteref: 'link', text: 'type', image: 'image' }[kind] || 'box';
+    return { card: 'note', sticky: 'sticky', frame: 'layout', noteref: 'link',
+      stickyref: 'sticky', taskref: 'list-check', text: 'type', image: 'image' }[kind] || 'box';
   }
 
   function applyTransform() {
@@ -26475,6 +26910,8 @@ https://github.com/nodeca/pako/blob/main/LICENSE
       { label: 'Add shape', icon: 'shapes', onClick: function () { addItem('shape', world); } },
       { label: 'Add frame', icon: 'layout', onClick: function () { addItem('frame', world); } },
       { label: 'Embed a note', icon: 'link', onClick: function () { addItem('noteref', world); } },
+      { label: 'Embed a sticky note', icon: 'sticky', onClick: function () { addItem('stickyref', world); } },
+      { label: 'Embed a task', icon: 'list-check', onClick: function () { addItem('taskref', world); } },
       { label: 'Add image', icon: 'image', onClick: function () { addItem('image', world); } },
       { separator: true },
       { label: 'Undo', icon: 'undo', hint: 'Mod+Z', disabled: !N.store.canUndo(),
@@ -27845,6 +28282,18 @@ https://github.com/nodeca/pako/blob/main/LICENSE
       meta.appendChild(el('span.task-due' + cls, null, dueLabel(task.due)));
     }
     (task.tags || []).slice(0, 3).forEach(function (t) { meta.appendChild(el('span', null, '#' + t)); });
+    /* v10.8: the canvas this task was thought through on. A task written in a
+       note shows its note's board, because a checkbox line has nowhere of its
+       own to keep one. */
+    if (N.cvlink) {
+      const cv = N.cvlink.ofTask(task);
+      if (cv) {
+        meta.appendChild(N.cvlink.chip(cv, {
+          fromLabel: task.source === 'note' ? task.noteTitle : 'a task',
+          onClear: function () { N.cvlink.setOnTask(task, null); render(); },
+        }));
+      }
+    }
     main.appendChild(meta);
     row.appendChild(main);
 
@@ -27941,6 +28390,22 @@ https://github.com/nodeca/pako/blob/main/LICENSE
       { label: 'Set priority…', icon: 'target', onClick: function () { setPriority(task); } },
       { label: 'Move in the matrix…', icon: 'matrix', onClick: function () { setQuadrant(task); } },
     ];
+    /* v10.8: link, preview, open or unlink the canvas behind this task. A
+       task written inside a note shares its note's board, and the rows say
+       so rather than pretending the checkbox has one of its own. */
+    if (N.cvlink) {
+      items.push({ separator: true });
+      N.cvlink.menuItems({
+        name: String(task.text || 'this task'),
+        get: function () { return N.cvlink.ofTask(task); },
+        set: async function (id) { await N.cvlink.setOnTask(task, id); render(); },
+      }).forEach(function (row) {
+        if (N.cvlink.taskLinkIsInherited(task)) {
+          row.description = (row.description ? row.description + ' · ' : '') + 'kept on the note';
+        }
+        items.push(row);
+      });
+    }
     if (N.remind && N.remind.setFor) {
       items.push({ label: 'Remind me about this…', icon: 'clock', onClick: function () {
         const where = task.source === 'note' ? 'in note "' + task.noteTitle + '"' : 'Task list';
@@ -28983,6 +29448,42 @@ https://github.com/nodeca/pako/blob/main/LICENSE
     return sticky;
   }
 
+  /**
+   * v10.8: bring one sticky into view and select it.
+   *
+   * A canvas card that references a sticky needs somewhere to go when it is
+   * double-clicked, and "the sticky wall, somewhere" is not an answer on a
+   * wall you have panned away from.
+   */
+  function focusOn(id) {
+    const sticky = N.store.state.stickies.get(id);
+    if (!sticky) { N.toast.info('That sticky is gone.', { ms: 2200 }); return false; }
+    selectedId = id;
+    const land = function () {
+      if (!wrap) { render(); }
+      const box = wrap ? wrap.getBoundingClientRect() : null;
+      if (box && box.width > 20) {
+        view.k = Math.min(MAX_ZOOM, Math.max(0.6, view.k || 1));
+        view.x = box.width / 2 - (sticky.x + (sticky.w || 200) / 2) * view.k;
+        view.y = box.height / 2 - (sticky.y + (sticky.h || 200) / 2) * view.k;
+        applyView();
+      }
+      paintSelection();
+      const node = board ? board.querySelector('[data-sticky="' + id + '"]') : null;
+      if (node) {
+        node.classList.add('is-found');
+        setTimeout(function () { node.classList.remove('is-found'); }, 1400);
+      }
+    };
+    if (N.store.state.activeView !== 'sticky') {
+      N.app.setView('sticky');
+      setTimeout(function () { render(); requestAnimationFrame(land); }, 220);
+    } else {
+      requestAnimationFrame(land);
+    }
+    return true;
+  }
+
   function buildSticky(sticky) {
     repairSticky(sticky);
     const members = sticky.stack ? stackMembers(sticky.stack) : [];
@@ -29004,6 +29505,14 @@ https://github.com/nodeca/pako/blob/main/LICENSE
     const head = el('div.sticky-head');
     head.appendChild(N.icons.node(sticky.kind === 'todo' ? 'list-check' : (sticky.kind === 'draw' ? 'pen' : 'sticky'), { size: 13 }));
     head.appendChild(el('span.spacer'));
+    /* v10.8: a linked canvas, previewable from here. */
+    if (N.cvlink && N.cvlink.ofSticky(sticky)) {
+      head.appendChild(N.cvlink.chip(N.cvlink.ofSticky(sticky), {
+        compact: true,
+        fromLabel: 'a sticky',
+        onClear: function () { N.cvlink.setOnSticky(sticky, null); },
+      }));
+    }
     const menuBtn = el('button.icon-btn.icon-btn-sm', { type: 'button', title: 'Sticky actions' });
     menuBtn.appendChild(N.icons.node('more', { size: 13 }));
     menuBtn.addEventListener('click', function (e) { e.stopPropagation(); openMenu(sticky, e.currentTarget); });
@@ -29587,6 +30096,7 @@ https://github.com/nodeca/pako/blob/main/LICENSE
 
   N.sticky = {
     init: init, render: render, create: createSticky, COLORS: COLORS,
+    focusOn: focusOn,
     fit: fit,
     zoomBy: function (f) { zoomAt(f); },
     viewState: function () { return { x: view.x, y: view.y, k: view.k }; },
@@ -31259,10 +31769,16 @@ https://github.com/nodeca/pako/blob/main/LICENSE
   }
 
   /** Canvas boards export as a flat PNG of their contents. */
-  async function exportCanvasPng(doc) {
-    // A board with nothing but ink on it is not empty. The old guard refused to
-    // export it, which looked like a broken button.
-    if (!doc || (!doc.items.length && !(doc.strokes || []).length)) { N.toast.info('This canvas is empty.'); return; }
+  /**
+   * v10.8: DRAW THE BOARD. Just draw it - no toast, no download.
+   *
+   * The preview dialog needs the same picture the PNG export produces, and
+   * the only way to be sure a preview never disagrees with the board is for
+   * both to come out of one renderer. This is that renderer; exportCanvasPng
+   * and canvasImage are two things done with its output.
+   */
+  async function renderCanvas(doc) {
+    if (!doc || (!doc.items.length && !(doc.strokes || []).length)) return null;
     let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
     doc.items.forEach(function (i) {
       minX = Math.min(minX, i.x); minY = Math.min(minY, i.y);
@@ -31366,11 +31882,51 @@ https://github.com/nodeca/pako/blob/main/LICENSE
       ctx.stroke();
     });
 
+    return canvas;
+  }
+
+  /**
+   * Draw the board, then hand it over as a download. Split out in v10.8 so
+   * the preview dialog can use the same renderer: a preview drawn by a second
+   * implementation is a preview that eventually disagrees with the board.
+   */
+  async function exportCanvasPng(doc) {
+    // A board with nothing but ink on it is not empty. The old guard refused to
+    // export it, which looked like a broken button.
+    if (!doc || (!doc.items.length && !(doc.strokes || []).length)) { N.toast.info('This canvas is empty.'); return; }
+    const canvas = await renderCanvas(doc);
+    if (!canvas) { N.toast.error('Could not render the canvas.'); return; }
     canvas.toBlob(function (blob) {
       if (!blob) { N.toast.error('Could not render the canvas.'); return; }
       U.downloadBlob(blob, U.safeFileName(doc.title, 'canvas') + '.png');
       N.toast.success('Canvas exported as PNG', { ms: 1800 });
     }, 'image/png');
+  }
+
+  /**
+   * The same picture as a data URL, scaled to fit `maxPx` on its long side.
+   * Returns null for a board with nothing on it, so the caller can say so in
+   * its own words rather than being handed a blank rectangle.
+   */
+  async function canvasImage(doc, maxPx) {
+    const full = await renderCanvas(doc);
+    if (!full) return null;
+    const limit = Math.max(240, Math.min(4000, maxPx || 1400));
+    const long = Math.max(full.width, full.height);
+    if (long <= limit) {
+      try { return full.toDataURL('image/png'); } catch (err) { return null; }
+    }
+    const k = limit / long;
+    const small = document.createElement('canvas');
+    small.width = Math.max(1, Math.round(full.width * k));
+    small.height = Math.max(1, Math.round(full.height * k));
+    try {
+      const ctx = small.getContext('2d');
+      ctx.imageSmoothingEnabled = true;
+      ctx.imageSmoothingQuality = 'high';
+      ctx.drawImage(full, 0, 0, small.width, small.height);
+      return small.toDataURL('image/png');
+    } catch (err) { return null; }
   }
 
   function roundRect(ctx, x, y, w, h, r) {
@@ -31667,6 +32223,7 @@ https://github.com/nodeca/pako/blob/main/LICENSE
     toMarkdown: toMarkdown, toStandaloneHtml: toStandaloneHtml,
     exportMarkdown: exportMarkdown, exportHtml: exportHtml, exportPdf: exportPdf,
     exportDocx: exportDocx, exportImage: exportImage, exportCanvasPng: exportCanvasPng,
+    renderCanvas: renderCanvas, canvasImage: canvasImage,
     exportVaultZip: exportVaultZip, importVaultZip: importVaultZip,
     importVaultDialog: importVaultDialog,
     exportNoteDialog: exportNoteDialog, exportFolderDialog: exportFolderDialog,
@@ -32497,7 +33054,19 @@ https://github.com/nodeca/pako/blob/main/LICENSE
     wrap.appendChild(row('Continue lists automatically',
       'Pressing Enter in a list starts the next item; pressing it on an empty item ends the list.', toggle('smartLists')));
     wrap.appendChild(row('Close brackets and quotes', 'Typing ( inserts (), and typing ) steps over it.', toggle('autoPairBrackets')));
-    wrap.appendChild(row('Typewriter scrolling', 'Keeps the line you are writing near the middle of the screen.', toggle('typewriterMode')));
+    /*
+     * v10.8: THE SECOND TYPEWRITER SWITCH IS GONE.
+     *
+     * There were two rows called "Typewriter scrolling" in this one section.
+     * The one that used to be here wrote `typewriterMode`, and NOTHING IN THE
+     * APP EVER READ THAT KEY - checked across the whole build. It was a
+     * switch wired to nothing, sitting directly above the real one.
+     *
+     * The real one is under Writing modes: it writes `typewriter`, it is what
+     * scrollToCaret() reads, and it is the one with "Caret sits" underneath
+     * it. Anyone who had the dead switch on is carried over to it once, in
+     * store.js, so a setting that appeared to be on becomes one that is.
+     */
     wrap.appendChild(row('Vim key bindings', 'Modal editing. Escape leaves insert mode.', toggle('vimMode')));
     wrap.appendChild(row('Confirm before deleting', 'Turn off if you trust undo. Deleting is always undoable.', toggle('confirmDelete')));
     wrap.appendChild(row('Indent size', 'Spaces inserted by Tab.',
@@ -50024,11 +50593,26 @@ https://github.com/nodeca/pako/blob/main/LICENSE
     /* Keep the spoken line in sight without yanking the pane about. */
     try {
       const r = rangeFor(s.start, Math.min(s.end, s.start + 48));
+      /*
+       * v10.8: SCROLL THE THING THAT SCROLLS.
+       *
+       * readPane() returns the .prose element, and in split mode .prose does
+       * not scroll - #split-preview around it does. Adding to .prose's
+       * scrollTop was therefore a no-op, and a sentence being read below the
+       * fold simply stayed below the fold.
+       */
       const pane = readPane();
-      if (r && pane) {
-        const rr = r.getBoundingClientRect(), pr = pane.getBoundingClientRect();
+      let box = pane;
+      while (box && box !== document.body) {
+        const cs = getComputedStyle(box);
+        if (/auto|scroll/.test(cs.overflowY) && box.scrollHeight > box.clientHeight + 2) break;
+        box = box.parentElement;
+      }
+      if (!box || box === document.body) box = pane;
+      if (r && box) {
+        const rr = r.getBoundingClientRect(), pr = box.getBoundingClientRect();
         if (rr.top < pr.top + 32 || rr.bottom > pr.bottom - 32) {
-          pane.scrollTop += (rr.top - pr.top) - pane.clientHeight * 0.34;
+          box.scrollTop += (rr.top - pr.top) - box.clientHeight * 0.34;
         }
       }
     } catch (err) { /* scrolling is a courtesy */ }
@@ -50790,6 +51374,402 @@ https://github.com/nodeca/pako/blob/main/LICENSE
   }
 })(window.NODALIS = window.NODALIS || {});
 
+/* ===== js/features/cvlink.js ===== */
+/* =========================================================================
+ * Nodalis — features/cvlink.js
+ *
+ * A canvas, attached to the thing it belongs to.
+ *
+ * A board is where you think something through; the note, the sticky or the
+ * task is what came out of it. Until now the two could only be joined from
+ * the canvas side, by embedding a note in a board. This is the other
+ * direction: anything can carry a link to a canvas, show it as a chip with
+ * an eye, and open a real picture of that board in a dialog without leaving
+ * what you are doing.
+ *
+ * The preview is not a mock-up of the canvas. It is the SAME renderer the
+ * PNG export uses, so a sticky, a shape, a photograph, a connector and a
+ * pen stroke all appear exactly as they do on the board, and the preview can
+ * never drift from the thing it is previewing.
+ *
+ * WHERE THE LINK LIVES, per surface, and why:
+ *
+ *   note      note.properties.canvas   - frontmatter, so it travels with the
+ *                                        file to disk and to GitHub and back
+ *   sticky    sticky.canvasId          - a record field; stickies are not files
+ *   task      task.canvasId            - on a standalone task's record; a task
+ *                                        written inside a note inherits its
+ *                                        note's canvas, because the alternative
+ *                                        is inventing markdown syntax for a
+ *                                        single checkbox line
+ * ========================================================================= */
+(function (N) {
+  'use strict';
+
+  const U = N.util;
+  const el = U.el;
+
+  /* --------------------------------------------------------------- model */
+
+  function all() {
+    try { return Array.from(N.store.state.canvases.values()); }
+    catch (err) { return []; }
+  }
+
+  function get(id) {
+    if (!id) return null;
+    try { return N.store.state.canvases.get(id) || null; }
+    catch (err) { return null; }
+  }
+
+  function titleOf(id) {
+    const c = get(id);
+    return c ? (c.title || 'Untitled canvas') : null;
+  }
+
+  /** What a canvas holds, in words, for the chip's tooltip and the dialog. */
+  function summary(id) {
+    const c = get(id);
+    if (!c) return '';
+    const items = Array.isArray(c.items) ? c.items.length : 0;
+    const ink = Array.isArray(c.strokes) ? c.strokes.length : 0;
+    const bits = [];
+    if (items) bits.push(U.pluralize(items, 'item'));
+    if (ink) bits.push(U.pluralize(ink, 'stroke'));
+    return bits.length ? bits.join(' · ') : 'Empty board';
+  }
+
+  /* --------------------------------------------------------------- pick */
+
+  /**
+   * Choose a canvas. Offers to make one when there are none, because
+   * "link a canvas" with nothing to link is a dead end.
+   */
+  async function pick(opts) {
+    const o = opts || {};
+    const list = all().sort(function (a, b) { return (b.updatedAt || 0) - (a.updatedAt || 0); });
+    if (!list.length) {
+      const make = await N.modal.confirm({
+        title: 'No canvases yet',
+        message: 'A canvas is an infinite board for cards, stickies, shapes and ink.',
+        detail: 'Make one now and link it to this?',
+        confirmLabel: 'Make a canvas',
+      });
+      if (!make) return null;
+      if (!N.canvas || !N.canvas.createCanvas) return null;
+      const made = await N.canvas.createCanvas('Board for ' + (o.forName || 'this'));
+      return made ? made.id : null;
+    }
+    const options = list.slice(0, 60).map(function (c) {
+      return {
+        value: c.id, icon: 'canvas',
+        label: c.title || 'Untitled canvas',
+        description: summary(c.id),
+      };
+    });
+    options.push({ value: '__new__', icon: 'plus', label: 'Make a new canvas…',
+      description: 'And link it to this' });
+    const chosen = await N.modal.choose({
+      title: o.title || 'Link which canvas?',
+      message: o.message || null,
+      options: options,
+    });
+    if (chosen === '__new__') {
+      if (!N.canvas || !N.canvas.createCanvas) return null;
+      const made = await N.canvas.createCanvas('Board for ' + (o.forName || 'this'));
+      return made ? made.id : null;
+    }
+    return chosen || null;
+  }
+
+  /* ------------------------------------------------------------ preview */
+
+  /**
+   * The dialog. One picture, the board's name, what is on it, and two ways
+   * out: close, or open the board for real.
+   */
+  async function preview(id, opts) {
+    const o = opts || {};
+    const canvas = get(id);
+    if (!canvas) {
+      N.toast.warn('That canvas no longer exists.', { ms: 3000 });
+      return null;
+    }
+    let shot = null;
+    const api = N.modal.open({
+      title: canvas.title || 'Untitled canvas',
+      size: 'lg',
+      dismissValue: null,
+      showClose: true,
+      render: function () {
+        const box = el('div.cvprev');
+        const meta = el('div.cvprev-meta');
+        meta.appendChild(N.icons.node('canvas', { size: 14 }));
+        meta.appendChild(el('span', null, summary(id)));
+        if (o.fromLabel) {
+          meta.appendChild(el('span.cvprev-dot', null, '·'));
+          meta.appendChild(el('span.dim', null, 'linked from ' + U.truncate(o.fromLabel, 40)));
+        }
+        box.appendChild(meta);
+
+        const stage = el('div.cvprev-stage');
+        stage.appendChild(el('div.cvprev-loading', null, 'Drawing the board…'));
+        box.appendChild(stage);
+
+        /* The same renderer the PNG export uses. */
+        const draw = function () {
+          if (!N.exporter || !N.exporter.canvasImage) {
+            U.clear(stage);
+            stage.appendChild(el('p.dim.small', null, 'This build cannot draw a preview.'));
+            return;
+          }
+          N.exporter.canvasImage(canvas, 1600).then(function (url) {
+            U.clear(stage);
+            if (!url) {
+              const empty = el('div.cvprev-empty');
+              empty.appendChild(N.icons.node('canvas', { size: 38 }));
+              empty.appendChild(el('div', null, 'Nothing on this board yet.'));
+              stage.appendChild(empty);
+              return;
+            }
+            shot = url;
+            const img = el('img.cvprev-img', { alt: 'Preview of ' + (canvas.title || 'the canvas'), src: url });
+            stage.appendChild(img);
+          }).catch(function () {
+            U.clear(stage);
+            stage.appendChild(el('p.dim.small', null, 'The preview could not be drawn.'));
+          });
+        };
+        /* After the dialog is laid out, so the image is measured against a
+           stage that has its real width. */
+        setTimeout(draw, 30);
+        return box;
+      },
+      footer: function (a) {
+        const out = [];
+        const openBtn = el('button.btn.btn-primary', { type: 'button' }, 'Open this canvas');
+        openBtn.addEventListener('click', function () {
+          a.close('open');
+          if (N.canvas && N.canvas.open) N.canvas.open(id);
+          else N.app.setView('canvas');
+          if (N.haptics) N.haptics.buzz('select');
+        });
+        out.push(el('button.btn', { type: 'button', onclick: function () { a.close(null); } }, 'Close'));
+        if (shot !== undefined) {
+          const copy = el('button.btn', { type: 'button', title: 'Put the picture on the clipboard' }, 'Copy picture');
+          copy.addEventListener('click', async function () {
+            try {
+              if (!shot) throw new Error('nothing drawn');
+              const blob = await (await fetch(shot)).blob();
+              if (navigator.clipboard && window.ClipboardItem) {
+                await navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })]);
+                N.toast.success('Picture copied', { ms: 1600 });
+              } else throw new Error('no clipboard');
+            } catch (err) {
+              N.toast.info('This browser will not let a page copy an image. Use Export as PNG on the board.', { ms: 4000 });
+            }
+          });
+          out.push(copy);
+        }
+        out.push(openBtn);
+        return out;
+      },
+    });
+    return api.promise;
+  }
+
+  /* --------------------------------------------------------------- chip */
+
+  /**
+   * The chip: the board's name and an eye. Small, quiet, and the same shape
+   * wherever it appears - a note's header, a sticky's head, a task's meta row.
+   */
+  function chip(id, opts) {
+    const o = opts || {};
+    const title = titleOf(id);
+    const node = el('span.cvchip' + (o.compact ? '.is-compact' : ''), {
+      dataset: { canvas: id || '' },
+    });
+    if (!title) {
+      /* A link to a board that has been deleted says so rather than
+         pretending, and offers the only useful action left. */
+      node.classList.add('is-missing');
+      node.appendChild(N.icons.node('canvas', { size: 12 }));
+      node.appendChild(el('span.cvchip-name', null, 'Canvas deleted'));
+      if (o.onClear) {
+        const x = el('button.cvchip-btn', { type: 'button', title: 'Remove this link' });
+        x.appendChild(N.icons.node('close', { size: 11 }));
+        x.addEventListener('click', function (e) { e.stopPropagation(); o.onClear(); });
+        node.appendChild(x);
+      }
+      return node;
+    }
+    node.appendChild(N.icons.node('canvas', { size: 12 }));
+    if (!o.compact) node.appendChild(el('span.cvchip-name', { title: title }, U.truncate(title, 22)));
+    const eye = el('button.cvchip-btn.cvchip-eye', {
+      type: 'button',
+      title: 'Preview "' + title + '"',
+      'aria-label': 'Preview the linked canvas',
+    });
+    eye.appendChild(N.icons.node('eye', { size: 13 }));
+    eye.addEventListener('click', function (e) {
+      e.stopPropagation();
+      e.preventDefault();
+      if (N.haptics) N.haptics.buzz('tap');
+      preview(id, { fromLabel: o.fromLabel });
+    });
+    node.appendChild(eye);
+    node.title = title + ' · ' + summary(id);
+    return node;
+  }
+
+  /* --------------------------------------------------------- menu items */
+
+  /**
+   * The three rows every surface needs, built from a getter and a setter so
+   * notes, stickies and tasks all behave identically.
+   */
+  function menuItems(o) {
+    const current = o.get();
+    const items = [];
+    if (current && titleOf(current)) {
+      items.push({
+        label: 'Preview the canvas', icon: 'eye',
+        description: titleOf(current),
+        onClick: function () { preview(current, { fromLabel: o.name }); },
+      });
+      items.push({
+        label: 'Open the canvas', icon: 'canvas',
+        onClick: function () { if (N.canvas && N.canvas.open) N.canvas.open(current); },
+      });
+      items.push({
+        label: 'Link a different canvas…', icon: 'refresh',
+        onClick: async function () {
+          const id = await pick({ forName: o.name, title: 'Link which canvas?' });
+          if (id) { await o.set(id); N.toast.success('Canvas linked', { ms: 1600 }); }
+        },
+      });
+      items.push({
+        label: 'Unlink the canvas', icon: 'unlink',
+        onClick: async function () {
+          await o.set(null);
+          N.toast.success('Canvas unlinked', { ms: 1600 });
+        },
+      });
+    } else {
+      items.push({
+        label: current ? 'Link a canvas (the old one is gone)…' : 'Link a canvas…',
+        icon: 'canvas',
+        description: 'Preview it from here with the eye',
+        onClick: async function () {
+          const id = await pick({ forName: o.name });
+          if (id) { await o.set(id); N.toast.success('Canvas linked', { ms: 1600 }); }
+        },
+      });
+    }
+    return items;
+  }
+
+  /* ------------------------------------------------------- the surfaces */
+
+  /* --- notes: frontmatter, so it survives a round trip to disk --- */
+  function ofNote(note) {
+    if (!note || !note.properties) return null;
+    const v = note.properties.canvas;
+    return v ? String(v) : null;
+  }
+  async function setOnNote(note, id) {
+    if (!note) return;
+    await N.store.updateNoteProperties(note.id, { canvas: id || undefined });
+    N.bus.emit('cvlink:changed', { kind: 'note', id: note.id });
+  }
+
+  /* --- stickies --- */
+  function ofSticky(sticky) { return sticky && sticky.canvasId ? String(sticky.canvasId) : null; }
+  async function setOnSticky(sticky, id) {
+    if (!sticky) return;
+    const rec = N.store.state.stickies.get(sticky.id) || sticky;
+    if (id) rec.canvasId = id; else delete rec.canvasId;
+    await N.store.saveRecord('stickies', rec);
+    N.bus.emit('cvlink:changed', { kind: 'sticky', id: sticky.id });
+    N.bus.emit('stickies:changed');
+  }
+
+  /* --- tasks: a standalone task carries its own; one written in a note
+         inherits the note's, which is the honest answer for a checkbox --- */
+  function ofTask(task) {
+    if (!task) return null;
+    if (task.source === 'note') {
+      const note = N.store.getNote(task.noteId);
+      return ofNote(note);
+    }
+    const rec = N.store.state.tasks.get(task.id);
+    return rec && rec.canvasId ? String(rec.canvasId) : null;
+  }
+  function taskLinkIsInherited(task) {
+    return !!(task && task.source === 'note');
+  }
+  async function setOnTask(task, id) {
+    if (!task) return;
+    if (task.source === 'note') {
+      const note = N.store.getNote(task.noteId);
+      await setOnNote(note, id);
+      return;
+    }
+    const rec = N.store.state.tasks.get(task.id);
+    if (!rec) return;
+    if (id) rec.canvasId = id; else delete rec.canvasId;
+    await N.store.saveRecord('tasks', rec);
+    N.bus.emit('cvlink:changed', { kind: 'task', id: task.id });
+    N.bus.emit('vault:changed');
+  }
+
+  /* ------------------------------------------------------------ commands */
+
+  function init() {
+    N.commands.registerMany([
+      {
+        id: 'cvlink.note',
+        title: 'Link a canvas to this note',
+        group: 'Canvas',
+        icon: 'canvas',
+        when: function () { return !!N.store.state.activeNoteId; },
+        run: async function () {
+          const note = N.store.getNote(N.store.state.activeNoteId);
+          if (!note) { N.toast.info('Open a note first.', { ms: 2000 }); return; }
+          const id = await pick({ forName: N.store.noteTitle(note) });
+          if (id) { await setOnNote(note, id); N.toast.success('Canvas linked', { ms: 1600 }); }
+        },
+      },
+      {
+        id: 'cvlink.preview',
+        title: "Preview this note's canvas",
+        group: 'Canvas',
+        icon: 'eye',
+        when: function () {
+          const note = N.store.getNote(N.store.state.activeNoteId);
+          return !!ofNote(note);
+        },
+        run: function () {
+          const note = N.store.getNote(N.store.state.activeNoteId);
+          const id = ofNote(note);
+          if (id) preview(id, { fromLabel: N.store.noteTitle(note) });
+          else N.toast.info('This note has no canvas linked.', { ms: 2200 });
+        },
+      },
+    ]);
+  }
+
+  N.cvlink = {
+    init: init,
+    pick: pick, preview: preview, chip: chip, menuItems: menuItems,
+    titleOf: titleOf, summary: summary, get: get,
+    ofNote: ofNote, setOnNote: setOnNote,
+    ofSticky: ofSticky, setOnSticky: setOnSticky,
+    ofTask: ofTask, setOnTask: setOnTask, taskLinkIsInherited: taskLinkIsInherited,
+  };
+})(window.NODALIS = window.NODALIS || {});
+
 /* ===== js/app.js ===== */
 /* =========================================================================
  * Nodalis — app.js
@@ -51142,6 +52122,9 @@ https://github.com/nodeca/pako/blob/main/LICENSE
       // share after exporter (it uses its blob helpers); bulk after sidebar.
       ['share', N.share], ['notemeta', N.notemeta], ['bulk', N.bulk],
       ['tools', N.tools],
+      /* v10.8: after canvas, sticky and tasks - it offers a menu row to all
+         three and a preview of what canvas holds. */
+      ['cvlink', N.cvlink],
     ];
     modules.forEach(function (entry) {
       const name = entry[0], mod = entry[1];
