@@ -10644,6 +10644,90 @@ html[data-script='complex'] .menu-item { min-height: 38px; height: auto; }
   .cvv-controls, .cvv-badge, .cvembed-grip, .cvembed-tools { display: none !important; }
 }
 
+
+
+/* =========================================================================
+ * v10.9.1 — LAYOUT LOCK
+ *
+ * THE BUG THIS FIXES
+ *
+ * "While I am typing the whole app slides to the left, the sidebar
+ *  disappears, I cannot see the details, and only a refresh puts it back."
+ *
+ * .app-body is a three-column grid: sidebar | note | right panel. When the
+ * right panel is closed it is not removed — it is pushed out of sight with
+ *
+ *     .app[data-right='closed'] .right-panel { margin-right: -300px; }
+ *
+ * A negative margin does not delete a box. The panel is still 300px wide and
+ * still sitting there, 300px past the right edge of .app-body. And .app-body
+ * said `overflow: hidden`.
+ *
+ * `overflow: hidden` does NOT mean "there is nothing to scroll". It means
+ * "there IS something to scroll, and I am hiding the scrollbar". The element
+ * is a real scroll container with scrollWidth 300px wider than itself. The
+ * browser is allowed to scroll it — and it does, every time it needs to bring
+ * a focused element into view. Focus anything inside that off-screen panel
+ * (Tab from the editor, the phone keyboard's "next field" arrow, the Links /
+ * Outline / Info panel re-rendering as you type) and the browser helpfully
+ * scrolls .app-body 300px to the left to show it.
+ *
+ * And then you are stuck. There is no scrollbar to drag back and a mouse
+ * wheel will not scroll a hidden axis, so nothing on the page can undo it.
+ * Only a reload resets scrollLeft. Hence "refresh fixes it".
+ *
+ * Measured, before this patch, at 1280x900 with the right panel closed:
+ *     .app-body  clientWidth 1280  scrollWidth 1580  -> 300px of hidden scroll
+ *     focusing one button in the closed panel -> .app-body.scrollLeft = 300
+ *
+ * THE FIX
+ *
+ * `overflow: clip` instead. A clip box is not a scroll box: it has no
+ * scrollport, no scrollLeft to set, and the browser physically cannot scroll
+ * it. The overflow is still invisible, nothing else changes. The plain
+ * `overflow: hidden` line is kept immediately above it as the fallback for
+ * Safari 15 and older, which ignores `clip` and keeps the old behaviour —
+ * the JavaScript guard at the bottom of this file covers those browsers.
+ * ========================================================================= */
+
+.app,
+.app-body,
+.main-view,
+.topbar,
+.pwa-mark {
+  overflow: hidden;   /* fallback: Safari < 16, Chrome < 90 */
+  overflow: clip;     /* a clip box cannot be scrolled, by anyone, ever */
+}
+
+/*
+ * Belt and braces for the one axis that actually caused the damage. Even on
+ * an engine that ignores `clip`, nothing here is ever allowed to become a
+ * horizontal scroller.
+ */
+.app,
+.app-body,
+.main-view {
+  overflow-x: hidden;
+  overflow-x: clip;
+}
+
+/*
+ * A closed drawer is off screen, so it should not be reachable by Tab either.
+ * The `inert` attribute is applied by the script at the bottom of the file;
+ * this is the matching visual state, and the belt for browsers too old for
+ * `inert` — content-visibility keeps a closed drawer out of the layout work
+ * as well, which is a small speed win on a phone.
+ */
+.app[data-sidebar='closed'] .sidebar[inert],
+.app[data-right='closed'] .right-panel[inert] {
+  pointer-events: none;
+}
+
+/*
+ * The editor's own scrollers keep their scrollbars — this is deliberately
+ * NOT applied to them. Only the immovable shell is locked down.
+ */
+
 </style>
 </head>
 
@@ -54127,5 +54211,161 @@ https://github.com/nodeca/pako/blob/main/LICENSE
 })(window.NODALIS = window.NODALIS || {});
 
 </script>
+
+
+<!-- =========================================================================
+     v10.9.1 — LAYOUT LOCK (runtime half)
+
+     The CSS above stops the shell from EVER becoming a scroll container on
+     any browser that understands `overflow: clip` — which is Chrome 90+,
+     Edge 90+, Firefox 81+, Safari 16+. That is the fix.
+
+     This script is the safety net underneath it, and it does three jobs:
+
+       1. Older Safari ignores `clip` and falls back to `hidden`, so the old
+          bug is still possible there. If anything ever scrolls a hidden axis,
+          this snaps it straight back to 0 in the same frame. The user sees
+          nothing.
+       2. It removes closed drawers from the keyboard tab order. Before this,
+          a phone keyboard's "next field" arrow or a Tab key would walk 24
+          buttons that live off the side of the screen — which is what asked
+          the browser to scroll in the first place, and is also just wrong
+          for anyone using a keyboard or a screen reader.
+       3. It re-pins the shell after the events that historically shift a
+          mobile layout: the on-screen keyboard opening and closing, rotating
+          the phone, and coming back to a backgrounded tab.
+
+     It is entirely event driven. It costs nothing while nothing is wrong.
+     ========================================================================= -->
+<script>
+(function () {
+  'use strict';
+
+  /* Every part of the frame that is meant to be immovable. */
+  var SHELLS = '#app, .app, .app-body, .main-view, .topbar, .sidebar, .right-panel';
+
+  /* Put one element back if a hidden axis of it has been scrolled. */
+  function pin(el) {
+    if (!el || el.nodeType !== 1) return;
+    var s;
+    try { s = getComputedStyle(el); } catch (err) { return; }
+    if (el.scrollLeft && (s.overflowX === 'hidden' || s.overflowX === 'clip')) el.scrollLeft = 0;
+    if (el.scrollTop && (s.overflowY === 'hidden' || s.overflowY === 'clip')) el.scrollTop = 0;
+  }
+
+  /*
+   * A scroll event fires on the element that scrolled, and scroll events do
+   * not bubble — so this listens in the capture phase, which does see them.
+   * If the thing that moved was never supposed to move, it is put back before
+   * the frame is painted.
+   */
+  document.addEventListener('scroll', function (e) {
+    var t = e.target;
+    if (t === document || t === document.documentElement || t === document.body) {
+      if (window.scrollX) window.scrollTo(0, window.scrollY);
+      if (document.body.scrollLeft) document.body.scrollLeft = 0;
+      if (document.documentElement.scrollLeft) document.documentElement.scrollLeft = 0;
+      return;
+    }
+    pin(t);
+  }, true);
+
+  var queued = false;
+  function pinAll() {
+    if (queued) return;
+    queued = true;
+    requestAnimationFrame(function () {
+      queued = false;
+      if (window.scrollX) window.scrollTo(0, window.scrollY);
+      pin(document.body);
+      pin(document.documentElement);
+      var n = document.querySelectorAll(SHELLS);
+      for (var i = 0; i < n.length; i++) pin(n[i]);
+    });
+  }
+
+  /* ------------------------------------------------ closed drawers go inert */
+
+  /*
+   * A drawer that is closed is off the side of the screen. Leaving its
+   * buttons in the tab order is what let the browser scroll the shell to
+   * "reveal" them. `inert` takes them out of the tab order, out of the
+   * accessibility tree and out of find-in-page, without touching the slide
+   * animation.
+   */
+  function syncInert() {
+    var app = document.getElementById('app');
+    if (!app) return;
+    var pairs = [
+      ['.sidebar', app.getAttribute('data-sidebar')],
+      ['.right-panel', app.getAttribute('data-right')]
+    ];
+    for (var i = 0; i < pairs.length; i++) {
+      var el = document.querySelector(pairs[i][0]);
+      if (!el) continue;
+      var closed = pairs[i][1] === 'closed';
+      if (closed && !el.hasAttribute('inert')) {
+        if (el.contains(document.activeElement)) {
+          try { document.activeElement.blur(); } catch (err) { /* already gone */ }
+        }
+        el.setAttribute('inert', '');
+        el.setAttribute('aria-hidden', 'true');
+      } else if (!closed && el.hasAttribute('inert')) {
+        el.removeAttribute('inert');
+        el.removeAttribute('aria-hidden');
+      }
+    }
+  }
+
+  function start() {
+    var app = document.getElementById('app');
+    if (!app) { setTimeout(start, 200); return; }
+
+    syncInert();
+    pinAll();
+
+    /*
+     * MutationObserver callbacks run as a microtask — before any timer, before
+     * the next frame — so a drawer is out of `inert` the instant it is marked
+     * open, well before anything inside it could be clicked or focused.
+     */
+    try {
+      new MutationObserver(function () { syncInert(); pinAll(); })
+        .observe(app, { attributes: true, attributeFilter: ['data-sidebar', 'data-right'] });
+    } catch (err) { /* very old browser: the scroll guard still holds */ }
+
+    /* The moments a mobile layout historically shifts. */
+    window.addEventListener('resize', function () { syncInert(); pinAll(); });
+    window.addEventListener('orientationchange', pinAll);
+    window.addEventListener('pageshow', pinAll);
+    document.addEventListener('visibilitychange', function () {
+      if (!document.hidden) pinAll();
+    });
+
+    /* Focus moving is the single most common cause, so check right after it. */
+    document.addEventListener('focusin', pinAll, true);
+
+    /*
+     * The on-screen keyboard. visualViewport is the part of the page actually
+     * being looked at; it resizes when the keyboard opens and closes, and that
+     * is exactly when iOS likes to leave a fixed layout nudged sideways.
+     */
+    if (window.visualViewport) {
+      window.visualViewport.addEventListener('resize', pinAll);
+      window.visualViewport.addEventListener('scroll', pinAll);
+    }
+
+    /* Anything that slid, settled. */
+    document.addEventListener('transitionend', function (e) {
+      var p = e.propertyName;
+      if (p === 'margin-left' || p === 'margin-right' || p === 'transform' || p === 'width') pinAll();
+    }, true);
+  }
+
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', start);
+  else start();
+})();
+</script>
+
 </body>
 </html>
