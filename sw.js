@@ -27,7 +27,7 @@
  * second so a plane or a tunnel does not take the app away.
  * ========================================================================= */
 
-const VERSION = 'nodalis-v9.4';
+const VERSION = 'nodalis-v9.5';
 const SHELL = VERSION + '-shell';
 
 self.addEventListener('install', function (event) {
