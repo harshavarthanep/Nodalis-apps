@@ -11259,9 +11259,9 @@ https://github.com/nodeca/pako/blob/main/LICENSE
 (function (N) {
   'use strict';
 
-  N.version = '10.9.0';
+  N.version = '10.9.3';
   N.versionName = 'v10.9';
-  N.built = '2026-09-09';
+  N.built = '2026-10-28';
 
   /** "v8.0.0" - what goes on screen. */
   N.versionLabel = function () { return 'v' + N.version; };
@@ -14337,6 +14337,12 @@ https://github.com/nodeca/pako/blob/main/LICENSE
 
   /** Force everything out now — used before export, unload, and manual sync. */
   async function flushNow() {
+    /* v10.9.3: everything that calls flushNow() - export, reload, Sync now,
+       leaving - means "get it all on disk". Grouped autosaves go first, so
+       they are in the queue this loop is about to drain. */
+    if (N.persist && N.persist.hasPending && N.persist.hasPending()) {
+      try { await N.persist.flush('vault'); } catch (err) { /* reported by persist */ }
+    }
     clearTimeout(flushTimer);
     let guard = 0;
     while (queue.size && guard++ < 10) {
@@ -15314,7 +15320,7 @@ https://github.com/nodeca/pako/blob/main/LICENSE
     flushNow: flushNow, writeFile: writeFile, readFile: readFile, removeFile: removeFile,
     ensureDir: ensureDir, walkMarkdown: walkMarkdown,
     shouldRemindSnapshot: shouldRemindSnapshot, markSnapshotTaken: markSnapshotTaken,
-    pending: function () { return queue.size; },
+    pending: function () { return queue.size + ((N.persist && N.persist.pendingCount) ? N.persist.pendingCount() : 0); },
     armSilentReconnect: armSilentReconnect,
     /* v8.1 */
     checkConnection: checkConnection, keepStorage: keepStorage,
@@ -16376,13 +16382,25 @@ https://github.com/nodeca/pako/blob/main/LICENSE
     // db.put never rejects — it degrades to memory so a failed write can't
     // lose the running session. For the editor we do need to know, so we
     // watch the failure counter across the write and surface it.
-    const failuresBefore = db.writeFailures ? db.writeFailures() : 0;
-    await db.put('notes', note);
-    if (db.writeFailures && db.writeFailures() > failuresBefore) {
-      const detail = db.health ? db.health().lastWriteError : '';
-      throw new Error(detail || 'This browser refused to save the note.');
+    /*
+     * v10.9.3: the editor's own autosaves are GROUPED. The note above is
+     * already updated in memory, so everything in the app sees the new text
+     * at once; only the physical write waits for the autosave interval (or
+     * for the next moment that matters - switching notes, leaving, closing).
+     * Every other caller - and the editor too when the interval is set to
+     * "after every pause" - writes straight away, exactly as before.
+     */
+    if (opts && opts.deferred && N.persist && N.persist.enabled && N.persist.enabled()) {
+      N.persist.defer(note);
+    } else {
+      const failuresBefore = db.writeFailures ? db.writeFailures() : 0;
+      await db.put('notes', note);
+      if (db.writeFailures && db.writeFailures() > failuresBefore) {
+        const detail = db.health ? db.health().lastWriteError : '';
+        throw new Error(detail || 'This browser refused to save the note.');
+      }
+      if (N.vault) N.vault.saveNote(note);
     }
-    if (N.vault) N.vault.saveNote(note);
     bus.emit('note:updated', note);
     if (!opts || !opts.quiet) emitVaultChange();
     return note;
@@ -18932,8 +18950,8 @@ https://github.com/nodeca/pako/blob/main/LICENSE
    * over the top of it. finish() now waits for the sequence to actually
    * finish. Anyone in a hurry presses Skip, taps, or hits a key.
    */
-  const SEQUENCE_MS = 2350;   // v9.9-L: the extra 450ms is the boom; the Skip button is still there
-  const MIN_VISIBLE_MS = 900;    // floor when the sequence is cut short
+  const SEQUENCE_MS = 700;    // v10.9.3: long enough to read as deliberate, short enough to never be waited on   // v9.9-L: the extra 450ms is the boom; the Skip button is still there
+  const MIN_VISIBLE_MS = 250;    // floor when the sequence is cut short
 
   /* ===================================================================== *
    * v9.9-L: THE LOADING SCREEN.
@@ -18958,126 +18976,66 @@ https://github.com/nodeca/pako/blob/main/LICENSE
    * when the app does, which is the only honest way to animate a wait.
    * ===================================================================== */
   function build() {
-    root = el('div.loader#loader', { role: 'status', 'aria-live': 'polite', 'aria-label': 'Loading Nodalis' });
-    root.appendChild(el('div.loader-grid', { 'aria-hidden': 'true' }));
-    root.appendChild(el('div.nd9-glow', { 'aria-hidden': 'true' }));
-
-    /* ---- the stage ---------------------------------------------------- */
-    const stage = el('div.nd9-stage', { 'aria-hidden': 'true' });
-    const svg = document.createElementNS(NS, 'svg');
-    svg.setAttribute('class', 'nd9-svg');
-    svg.setAttribute('viewBox', '0 0 172 172');
-
-    const orbit = document.createElementNS(NS, 'circle');
-    orbit.setAttribute('class', 'nd9-orbit');
-    orbit.setAttribute('cx', '86'); orbit.setAttribute('cy', '86'); orbit.setAttribute('r', '68');
-    svg.appendChild(orbit);
-
     /*
-     * Six nodes on the orbit, and six chords between them. One chord per
-     * boot step plus one for the finish, so "building the link graph" is
-     * drawn by the thing it describes.
+     * v10.9.3: THE LOADING SCREEN, QUIETER.
+     *
+     * The mark draws itself, the name appears beneath it, and one thin line
+     * fills with the app's real progress - the same honest progress the old
+     * card reported, without the card. The step names are still announced
+     * to screen readers. Nothing here waits: the app is on screen as soon as
+     * it is ready.
      */
-    const RING = [];
+    root = el('div.loader.nd-boot#loader', { role: 'status', 'aria-live': 'polite', 'aria-label': 'Loading Nodalis' });
+
+    const stage = el('div.ndb-stage', { 'aria-hidden': 'true' });
+    const svg = document.createElementNS(NS, 'svg');
+    svg.setAttribute('class', 'ndb-mark');
+    svg.setAttribute('viewBox', '0 0 64 64');
+    const cx = 32, cy = 32, R = 22;
+    const pts = [];
     for (let i = 0; i < 6; i++) {
       const a = (Math.PI / 3) * i - Math.PI / 2;
-      RING.push([86 + 68 * Math.cos(a), 86 + 68 * Math.sin(a)]);
+      pts.push([cx + R * Math.cos(a), cy + R * Math.sin(a)]);
     }
-    const CHORDS = [[0, 2], [2, 4], [4, 0], [1, 3], [3, 5], [5, 1]];
-    links = [];
-    CHORDS.forEach(function (pair) {
-      const a = RING[pair[0]], b = RING[pair[1]];
-      const line = document.createElementNS(NS, 'line');
-      line.setAttribute('class', 'nd9-link');
-      line.setAttribute('x1', a[0].toFixed(1)); line.setAttribute('y1', a[1].toFixed(1));
-      line.setAttribute('x2', b[0].toFixed(1)); line.setAttribute('y2', b[1].toFixed(1));
-      const len = Math.hypot(b[0] - a[0], b[1] - a[1]);
-      line.style.setProperty('--len', len.toFixed(1));
-      svg.appendChild(line);
-      links.push(line);
-    });
-    RING.forEach(function (pt, i) {
+    const f = function (p) { return p[0].toFixed(2) + ' ' + p[1].toFixed(2); };
+    let d = 'M' + f(pts[0]);
+    for (let i = 1; i < 6; i++) d += 'L' + f(pts[i]);
+    d += 'Z';
+    d += 'M' + f(pts[0]) + 'L' + f(pts[3]);
+    d += 'M' + f(pts[1]) + 'L' + f(pts[4]);
+    d += 'M' + f(pts[2]) + 'L' + f(pts[5]);
+    const path = document.createElementNS(NS, 'path');
+    path.setAttribute('class', 'ndb-mark-path');
+    path.setAttribute('d', d);
+    path.setAttribute('pathLength', '100');
+    svg.appendChild(path);
+    pts.forEach(function (p, i) {
       const c = document.createElementNS(NS, 'circle');
-      c.setAttribute('class', 'nd9-node');
-      c.setAttribute('cx', pt[0].toFixed(1)); c.setAttribute('cy', pt[1].toFixed(1));
-      c.setAttribute('r', '3.2');
-      c.style.setProperty('--i', i);
+      c.setAttribute('class', 'ndb-node');
+      c.setAttribute('cx', p[0].toFixed(2));
+      c.setAttribute('cy', p[1].toFixed(2));
+      c.setAttribute('r', '3');
+      c.style.setProperty('--i', String(i));
       svg.appendChild(c);
     });
-
-    /*
-     * markPath() draws the hexagon at (88,84) r=26 in the old 190x175 stage.
-     * Shifting it by (-2,+2) centres it on this 172x172 one, which is what
-     * lets it spin about its own middle instead of orbiting a point near it.
-     */
-    const mark = document.createElementNS(NS, 'path');
-    mark.setAttribute('class', 'nd9-mark');
-    mark.setAttribute('d', markPath());
-    mark.setAttribute('transform', 'translate(-2, 2)');
-    svg.appendChild(mark);
     stage.appendChild(svg);
-
-    /* The boom's shockwaves. Idle and invisible until progress reaches 1. */
-    for (let i = 0; i < 3; i++) {
-      const ring = el('span.nd9-ring');
-      ring.style.setProperty('--i', i);
-      stage.appendChild(ring);
-    }
     root.appendChild(stage);
 
-    root.appendChild(el('div.nd9-name', null, 'Nodalis'));
-    root.appendChild(el('div.nd9-sub', null, 'Local-first markdown notes'));
+    root.appendChild(el('div.ndb-name', { 'aria-hidden': 'true' }, 'Nodalis'));
 
-    /* ---- the sheet ---------------------------------------------------- */
-    const sheet = el('div.nd9-sheet');
-    const lines = el('div.nd9-lines');
-    noteLines = [];
-    /* Ragged on purpose - five equal bars read as a loading placeholder,
-       these read as a paragraph. */
-    [78, 96, 62, 88, 46].forEach(function (w) {
-      const ln = el('span.nd9-line');
-      ln.style.setProperty('--w', w + '%');
-      lines.appendChild(ln);
-      noteLines.push(ln);
-    });
-    sheet.appendChild(lines);
-
-    meter = el('div.nd9-meter');
-    barFill = el('div.nd9-meter-fill');
+    meter = el('div.ndb-track', { 'aria-hidden': 'true' });
+    barFill = el('span.ndb-fill');
     meter.appendChild(barFill);
-    sheet.appendChild(meter);
+    root.appendChild(meter);
 
-    const foot = el('div.nd9-foot');
-    stepLine = el('div.nd9-step', null, STEPS[0]);
-    pctLine = el('div.nd9-pct', null, '0%');
-    foot.appendChild(stepLine);
-    foot.appendChild(pctLine);
-    sheet.appendChild(foot);
-    root.appendChild(sheet);
+    stepLine = el('div.ndb-sr', null, STEPS[0]);
+    root.appendChild(stepLine);
+    root.appendChild(el('div.ndb-ver', { 'aria-hidden': 'true' }, (N.versionLabel ? N.versionLabel() : '')));
 
-    /*
-     * The three claims are the three things Nodalis actually does
-     * differently, and all three are verifiable by the person reading them.
-     */
-    const claims = el('div.nd9-claims', { 'aria-hidden': 'true' });
-    ['No upload', 'No account', 'Your files, your disk'].forEach(function (text, i) {
-      if (i) claims.appendChild(el('i', null, '//'));
-      claims.appendChild(el('span', null, text));
-    });
-    root.appendChild(claims);
-    root.appendChild(el('div.nd9-ver', null, (N.versionLabel ? N.versionLabel() : '')));
-
-    /*
-     * v10.7: NO SKIP BUTTON.
-     *
-     * Asked for, and right: the sequence is 2.35 seconds and the button was
-     * the only thing on the screen competing with the mark for attention.
-     * Skipping itself stays - a tap, a key or a scroll still cuts the rest
-     * short, which is the affordance that actually matters and costs no
-     * pixels. requestSkip() is untouched and is still what the app listens
-     * for, so nothing downstream changes.
-     */
-
+    noteLines = [];
+    links = [];
+    pctLine = null;
+    bars = null;
     boomed = false;
     return root;
   }
@@ -19162,7 +19120,7 @@ https://github.com/nodeca/pako/blob/main/LICENSE
 
   /* The whole bar takes at least 1/RATE seconds to cross. SEQUENCE_MS is
      2350, so 0.85 leaves comfortable room for the boom to play out. */
-  const PROG_RATE = 0.85;
+  const PROG_RATE = 2.6;
 
   function progress(ratio, step) {
     if (!root) return;
@@ -19203,8 +19161,8 @@ https://github.com/nodeca/pako/blob/main/LICENSE
   function settleBoom() {
     return new Promise(function (done) {
       const started = Date.now();
-      const CAP_MS = 900;
-      const BOOM_MS = 420;
+      const CAP_MS = 400;
+      const BOOM_MS = 140;
       const check = function () {
         if (!root || progShown >= 0.999 || Date.now() - started > CAP_MS) {
           setTimeout(done, root ? BOOM_MS : 0);
@@ -19295,7 +19253,10 @@ https://github.com/nodeca/pako/blob/main/LICENSE
         }
 
         root.classList.add('is-done');
+        let cleaned = false;
         const cleanup = function () {
+          if (cleaned) return;
+          cleaned = true;
           if (root && root.parentNode) root.parentNode.removeChild(root);
           root = null; barFill = null; stepLine = null;
           bars = null; meter = null; pctLine = null;
@@ -19305,9 +19266,11 @@ https://github.com/nodeca/pako/blob/main/LICENSE
           N.bus.emit('loader:done');
           resolve();
         };
-        root.addEventListener('animationend', cleanup, { once: true });
-        root.addEventListener('transitionend', cleanup, { once: true });
-        setTimeout(cleanup, still ? 900 : 400);
+        const host = root;
+        const onEnd = function (e) { if (!e || e.target === host) cleanup(); };
+        host.addEventListener('animationend', onEnd);
+        host.addEventListener('transitionend', onEnd);
+        setTimeout(cleanup, still ? 560 : 320);
       }, wait);
     });
   }
@@ -19733,19 +19696,25 @@ https://github.com/nodeca/pako/blob/main/LICENSE
       try { return N.editor.isDirty() || N.vault.pending() > 0; } catch (err) { return false; }
     })();
 
+    /* v10.9.3: closing saves everything first and shows it happening. */
+    const careful = !!(N.persist && N.persist.saveAndClose);
     const leave = await N.modal.confirm({
       title: 'This is the start',
       message: 'There is nothing behind this screen — you are at the beginning of the app.',
-      detail: dirty
-        ? 'You have changes still being saved. Closing now risks losing them.'
-        : 'Everything is saved. Close Nodalis?',
-      confirmLabel: 'Close Nodalis',
+      detail: careful
+        ? (dirty ? 'Your latest changes are saved first — you will see it happen.' : 'Everything is saved. Close Nodalis?')
+        : (dirty ? 'You have changes still being saved. Closing now risks losing them.' : 'Everything is saved. Close Nodalis?'),
+      confirmLabel: careful && dirty ? 'Save and close' : 'Close Nodalis',
       cancelLabel: 'Stay here',
-      danger: !!dirty,
+      danger: careful ? false : !!dirty,
     });
     askingToLeave = false;
 
     if (!leave) return false;
+
+    if (careful) {
+      try { await N.persist.saveAndClose(); return true; } catch (err) { /* fall through to the plain route */ }
+    }
 
     // Flush before going, then leave by whichever route the browser allows.
     try { N.editor.flushSave(); } catch (err) { /* editor may be gone */ }
@@ -23414,6 +23383,9 @@ https://github.com/nodeca/pako/blob/main/LICENSE
         ta.value = note.content;
         suppressRender = false;
         renderPreview();
+        /* v10.9.3: a pull, a restore or a link rewrite changed the text, so
+           the count under it has to change too. */
+        updateWordCount(note);
       }
     });
     bus.on('settings:changed', function () {
@@ -23517,6 +23489,10 @@ https://github.com/nodeca/pako/blob/main/LICENSE
   function setDirty(value) {
     dirty = value;
     if (!savePip) return;
+    /* v10.9.3: "Saved" now means saved to storage, not just to memory. */
+    if (N.persist && N.persist.paintPip) {
+      try { N.persist.paintPip(); return; } catch (err) { /* fall back to the plain pip */ }
+    }
     savePip.classList.toggle('is-dirty', value && !saving);
     savePip.classList.toggle('is-saved', !value && !saving);
     if (saveLabel) saveLabel.textContent = saving ? 'Saving…' : (value ? 'Unsaved' : 'Saved');
@@ -23582,7 +23558,7 @@ https://github.com/nodeca/pako/blob/main/LICENSE
     saving = true;
     setDirty(true);
     try {
-      await N.store.updateNoteContent(id, text);
+      await N.store.updateNoteContent(id, text, { deferred: true });
 
       const superseded = latestTicket.get(id) !== ticket;
       if (!superseded) {
@@ -23674,7 +23650,33 @@ https://github.com/nodeca/pako/blob/main/LICENSE
     maybeOpenAutocomplete();
   }
 
-  const renderPreviewDebounced = U.debounce(function () { renderPreview(); }, 110);
+  /*
+   * v10.9.3: THE WAIT GROWS WITH THE COST.
+   *
+   * A fixed 110ms meant a long note with images and embeds was re-rendered
+   * between almost every pair of words, and the main thread was busy exactly
+   * when the next keystroke arrived - which is what "typing is not stable"
+   * feels like. Short notes still update within 110ms; a note whose preview
+   * takes 60ms to draw now waits 180ms, capped at 700ms.
+   */
+  let previewCost = 0;
+  const renderPreviewDebounced = (function () {
+    let t = null;
+    const run = function () {
+      t = null;
+      const t0 = (window.performance && performance.now) ? performance.now() : Date.now();
+      renderPreview();
+      const dt = ((window.performance && performance.now) ? performance.now() : Date.now()) - t0;
+      previewCost = previewCost ? previewCost * 0.7 + dt * 0.3 : dt;
+    };
+    const f = function () {
+      clearTimeout(t);
+      t = setTimeout(run, Math.min(700, Math.max(110, Math.round(previewCost * 3))));
+    };
+    f.cancel = function () { clearTimeout(t); t = null; };
+    f.flush = function () { if (t) { clearTimeout(t); run(); } };
+    return f;
+  })();
 
   function renderPreview() {
     if (!preview) return;
@@ -24018,6 +24020,10 @@ https://github.com/nodeca/pako/blob/main/LICENSE
 
   function syncScrollFromPreview() {
     if (getMode() !== 'split') return;
+    /* v10.9.3: a redraw changes the preview's height, the browser nudges its
+       scroll position, and that used to drag the text you were typing up or
+       down. Only a scroll the person made may move the editor. */
+    if (N.steady && N.steady.previewIntent && !N.steady.previewIntent()) return;
     if (Date.now() < scrollSyncLock) return;
     const pane = document.getElementById('split-preview');
     if (!pane) return;
@@ -24122,6 +24128,11 @@ https://github.com/nodeca/pako/blob/main/LICENSE
   const CLOSERS = new Set([')', ']', '}', '"', "'", '`']);
 
   function onKeyDown(e) {
+    /* v10.9.3: Tamil, Hindi, Japanese, Chinese, Korean and most phone
+       keyboards compose a character before inserting it. Enter or Tab during
+       composition confirms the character - it must not also start a list
+       item or indent the line. */
+    if (e.isComposing) return;
     if (autocomplete && handleAutocompleteKey(e)) return;
 
     const s = selection();
@@ -24953,6 +24964,8 @@ https://github.com/nodeca/pako/blob/main/LICENSE
       { id: 'editor.save', title: 'Save now', group: 'Editor', icon: 'save', accel: 'Mod+S', allowInInput: true,
         run: async function () {
           flushSave();
+          /* v10.9.3: the same as tapping the save status. */
+          if (N.persist && N.persist.saveNow) { await N.persist.saveNow({ github: 'stale' }); return; }
           if (N.vault.isFolderMode()) { await N.vault.flushNow(); N.toast.success('Saved to your folder', { ms: 1600 }); }
           else N.toast.success('Saved on this device', { ms: 1600 });
         } },
@@ -31172,7 +31185,19 @@ https://github.com/nodeca/pako/blob/main/LICENSE
     N.bus.on('vault:changed', U.debounce(function () {
       if (N.store.state.activeView === 'review') render();
     }, 800));
-    N.bus.on('note:updated', U.debounce(recordActivity, 2000));
+    /* v10.9.3: the first activity of a day is recorded at once, so a streak
+       is recognised the moment you start; after that at most once a minute.
+       It was a database write and a folder rewrite for every typing pause. */
+    N.bus.on('note:updated', (function () {
+      let t = null;
+      return function () {
+        let fresh = false;
+        try { fresh = !N.store.state.journal.has(U.todayKey()); } catch (err) { fresh = false; }
+        if (fresh) { clearTimeout(t); t = null; recordActivity(); return; }
+        if (t) return;
+        t = setTimeout(function () { t = null; recordActivity(); }, 60000);
+      };
+    })());
     N.bus.on('note:created', recordActivity);
     N.bus.on('task:completed', function () { recordActivity({ tasksDone: 1 }); });
 
@@ -33286,7 +33311,7 @@ https://github.com/nodeca/pako/blob/main/LICENSE
       ? 'Saving to "' + state.name + '"'
       : 'Your notes are only in this browser'));
     bmain.appendChild(el('div', { style: { lineHeight: '1.55' } }, info.safe
-      ? 'Every edit is written to disk within a second. ' + U.pluralize(N.store.state.notes.size, 'note') + ' currently synced.'
+      ? (N.persist && N.persist.describeCadence ? N.persist.describeCadence() + ' ' : 'Every edit is written to disk within a second. ') + U.pluralize(N.store.state.notes.size, 'note') + ' currently synced.'
       : (info.reason || '')));
 
     const actions = el('div.banner-actions');
@@ -34695,7 +34720,7 @@ https://github.com/nodeca/pako/blob/main/LICENSE
           if (supported) ftitle.appendChild(el('span.onboard-recommended', null, 'recommended'));
           fmain.appendChild(ftitle);
           fmain.appendChild(el('div.onboard-choice-desc', null, supported
-            ? 'Every change is written to a .md file within a second. Point it at an existing Obsidian vault and it will read straight from it.'
+            ? 'Every change is saved to a plain .md file automatically. Point it at an existing Obsidian vault and it will read straight from it.'
             : 'Not available in this browser. Chrome, Edge, Brave or Arc on a desktop can do this.'));
           if (supported && N.db.isDegraded()) {
             fmain.appendChild(el('div.onboard-choice-desc', {
@@ -34950,7 +34975,7 @@ https://github.com/nodeca/pako/blob/main/LICENSE
     {
       id: 'storage', title: 'Where your notes live', icon: 'save',
       body: [
-        ['A real folder, by preference', 'On Chrome, Edge, Brave, Opera or Arc, Settings → Storage lets you pick a folder. From then on every keystroke is written to a plain `.md` file within a second — deletes and renames included.'],
+        ['A real folder, by preference', 'On Chrome, Edge, Brave, Opera or Arc, Settings → Storage lets you pick a folder. From then on everything you write is saved to a plain `.md` file automatically — deletes and renames included.'],
         ['Obsidian compatibility', 'The on-disk format matches Obsidian: markdown at the root, app data in a `.nodalis` folder. Point Nodalis at an existing vault and it reads straight in.'],
         ['Other browsers', 'Safari and Firefox cannot write to a folder. Nodalis works fully there but stores notes in the browser, and will keep reminding you to export a `.zip` — because clearing site data would erase them.'],
         ['Backups', 'Settings → Backup exports everything as a zip: notes as `.md`, plus canvases, stickies, tasks and attachments. Importing it anywhere restores the lot.'],
@@ -36331,7 +36356,9 @@ https://github.com/nodeca/pako/blob/main/LICENSE
       invalidateChanges();
 
       if (progress) N.toast.dismiss('gh');
-      N.toast.success(
+      /* v10.9.3: the interval backup confirms itself in the save status, not
+         with a toast every ten minutes. */
+      if (!o.quiet) N.toast.success(
         written || removed
           ? 'Backed up — ' + U.pluralize(written, 'note') + ' updated' + (removed ? ', ' + removed + ' removed' : '') + '.'
           : 'Already up to date.',
@@ -53818,6 +53845,13 @@ https://github.com/nodeca/pako/blob/main/LICENSE
     items.push({ label: 'Help and tour', icon: 'help', onClick: function () { N.help.open(); } });
     items.push({ label: 'Share Nodalis', icon: 'share', onClick: function () { N.exporter.shareApp(); } });
     items.push({ label: 'Keyboard shortcuts', icon: 'keyboard', onClick: function () { N.commands.run('settings.shortcuts'); } });
+    /* v10.9.3 */
+    if (N.persist && N.persist.saveAndClose) {
+      items.push({ separator: true });
+      items.push({ label: 'Save and close Nodalis', icon: 'save',
+        description: 'Saves everywhere and shows you what was saved',
+        onClick: function () { N.persist.saveAndClose(); } });
+    }
 
     N.menu.show(items, {
       title: 'More',
@@ -54135,6 +54169,20 @@ https://github.com/nodeca/pako/blob/main/LICENSE
 
   function watchUnload() {
     window.addEventListener('beforeunload', function (e) {
+      /*
+       * v10.9.3: a page cannot show its own screen when the tab or window is
+       * closed - no browser allows it. What it CAN do is save synchronously
+       * in this instant, which N.persist does, and only ask "Leave site?"
+       * when that genuinely was not possible.
+       */
+      if (N.persist && N.persist.onBeforeUnload) {
+        let ask = false;
+        try { ask = N.persist.onBeforeUnload(); } catch (err) { ask = true; }
+        if (!ask) return undefined;
+        e.preventDefault();
+        e.returnValue = '';
+        return '';
+      }
       let pending = 0;
       try { pending = N.vault.pending(); } catch (err) { pending = 0; }
       if (N.editor.isDirty() || pending > 0) {
@@ -54951,12 +54999,27 @@ https://github.com/nodeca/pako/blob/main/LICENSE
 
     var pendingSave = new Set();
 
-    var flushStacks = U.debounce(function () {
+    var flushStacksNow = function () {
       var ids = Array.from(pendingSave);
       pendingSave.clear();
       ids.forEach(function (id) { persist(id); });
       pruneIndex();
-    }, 1400);
+    };
+    /* v10.9.3: written on the same beat as the notes themselves, instead of
+       1.4 seconds after every pause. Leaving the page still writes it at once. */
+    var flushStacks = (function () {
+      var t = null;
+      var f = function () {
+        if (t) return;
+        var wait = (N.persist && N.persist.intervalMs && N.persist.enabled && N.persist.enabled())
+          ? Math.max(1400, N.persist.intervalMs()) : 1400;
+        t = setTimeout(function () { t = null; flushStacksNow(); }, wait);
+      };
+      f.flush = function () { if (t) { clearTimeout(t); t = null; } if (pendingSave.size) flushStacksNow(); };
+      f.cancel = function () { clearTimeout(t); t = null; };
+      return f;
+    })();
+    try { N.bus.on('persist:flushed', function () { flushStacks.flush(); }); } catch (err) { /* fine */ }
 
     async function persist(id) {
       if (!enabled) return;
@@ -55651,6 +55714,1390 @@ https://github.com/nodeca/pako/blob/main/LICENSE
     });
   });
 })();
+</script>
+
+
+<!-- =========================================================================
+     v10.9.3 - CALM SAVING, STEADY TYPING, A QUICK START
+
+     Autosave grouped on an interval you choose, with instant saves at every
+     moment that matters and a rescue copy at close. GitHub backed up while you
+     work. A save status that tells the truth, a Save-and-close screen, a typing
+     glow, steadier typing and a quicker loading screen.
+     ========================================================================= -->
+<style id="nd-v1093-style">
+/* =========================================================================
+ * v10.9.3 - CALM SAVING, STEADY TYPING, A QUICK START
+ * Everything below is additive. It only adds rules; nothing above is edited.
+ * ========================================================================= */
+
+/* ---- 1. the bar under the editor can never change height ---------------
+ * It is `overflow-x: auto`, so when "Saving…" made the row a few pixels
+ * wider than the screen a horizontal scrollbar appeared, the bar grew, and
+ * the writing area above it shrank by the same amount - mid-sentence. The
+ * row still scrolls sideways on a tiny phone; it just never draws a bar. */
+.editor-foot { scrollbar-width: none; overflow-y: hidden; font-variant-numeric: tabular-nums; }
+.editor-foot::-webkit-scrollbar { display: none; width: 0; height: 0; }
+#save-label { display: inline-block; min-width: 4.9em; }
+.save-pip { cursor: pointer; border-radius: 999px; padding: 2px 8px 2px 6px; margin-left: -6px;
+  transition: background-color 160ms ease; -webkit-tap-highlight-color: transparent; }
+.save-pip:hover { background: color-mix(in srgb, var(--text-0) 6%, transparent); }
+.save-pip:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.save-pip.nd-saving .dot { background: var(--accent); animation: nd-pip-breathe 900ms ease-in-out infinite; }
+.save-pip.nd-error .dot { background: #dc2626; }
+.save-pip.nd-error #save-label { color: #dc2626; }
+@keyframes nd-pip-breathe { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
+
+/* ---- 2. the typing glow ----------------------------------------------- */
+#word-count {
+  display: inline-block;
+  padding: 2px 9px;
+  margin: 0 -9px;
+  border-radius: 999px;
+  position: relative;
+  overflow: hidden;
+  font-variant-numeric: tabular-nums;
+  transition: color 420ms ease, background-color 420ms ease, box-shadow 420ms ease;
+}
+#word-count.nd-flow {
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 11%, transparent);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 22%, transparent),
+              0 0 14px color-mix(in srgb, var(--accent) 22%, transparent);
+}
+#word-count.nd-flow-pop::after {
+  content: '';
+  position: absolute; inset: 0;
+  background: linear-gradient(100deg, transparent 20%,
+    color-mix(in srgb, #fff 55%, transparent) 50%, transparent 80%);
+  transform: translateX(-110%);
+  animation: nd-flow-sweep 1000ms cubic-bezier(.4, 0, .2, 1) forwards;
+  pointer-events: none;
+}
+@keyframes nd-flow-sweep { to { transform: translateX(110%); } }
+[data-animations='none'] #word-count { transition: none; }
+[data-animations='none'] #word-count.nd-flow-pop::after { animation: none; display: none; }
+@media (prefers-reduced-motion: reduce) {
+  #word-count { transition: none; }
+  #word-count.nd-flow-pop::after { animation: none; display: none; }
+  .save-pip.nd-saving .dot { animation: none; }
+}
+
+/* ---- 3. the loading screen -------------------------------------------- */
+html body .loader.nd-boot {
+  gap: 0;
+  background: var(--nd-boot-bg, var(--bg-canvas));
+  perspective: none;
+  transition: none;
+}
+html body .loader.nd-boot::before,
+html body .loader.nd-boot::after,
+html body .loader.nd-boot.is-done::after { content: none !important; display: none !important; animation: none !important; }
+.loader.nd-boot .ndb-stage { width: 64px; height: 64px; animation: ndb-in 460ms cubic-bezier(.2, .8, .2, 1) both; }
+.loader.nd-boot .ndb-mark { width: 100%; height: 100%; overflow: visible; display: block; }
+.loader.nd-boot .ndb-mark-path {
+  fill: none; stroke: var(--accent); stroke-width: 2.4;
+  stroke-linejoin: round; stroke-linecap: round;
+  stroke-dasharray: 100; stroke-dashoffset: 100;
+  animation: ndb-draw 620ms cubic-bezier(.65, 0, .35, 1) 40ms forwards;
+}
+.loader.nd-boot .ndb-node {
+  fill: var(--accent); opacity: 0;
+  transform-box: fill-box; transform-origin: center;
+  animation: ndb-node 280ms cubic-bezier(.2, .8, .2, 1) forwards;
+  animation-delay: calc(240ms + var(--i, 0) * 45ms);
+}
+.loader.nd-boot .ndb-name {
+  margin-top: 20px;
+  font-family: var(--font-display, var(--font-ui, system-ui));
+  font-size: 15px; font-weight: 600; letter-spacing: 0.01em;
+  color: var(--text-0);
+  opacity: 0; animation: ndb-fade 420ms ease-out 140ms forwards;
+}
+.loader.nd-boot .ndb-track {
+  margin-top: 26px; width: 128px; height: 3px; border-radius: 3px;
+  background: color-mix(in srgb, var(--text-0) 11%, transparent);
+  overflow: hidden;
+  opacity: 0; animation: ndb-fade 300ms ease-out 200ms forwards;
+}
+.loader.nd-boot .ndb-fill { display: block; height: 100%; width: 0; background: var(--accent); border-radius: inherit; }
+.loader.nd-boot .ndb-sr {
+  position: absolute; width: 1px; height: 1px; overflow: hidden;
+  clip: rect(0 0 0 0); clip-path: inset(50%); white-space: nowrap;
+}
+.loader.nd-boot .ndb-ver {
+  position: absolute; left: 0; right: 0; text-align: center;
+  bottom: max(18px, env(safe-area-inset-bottom, 0px));
+  font-size: 11px; color: var(--text-3); opacity: 0.7;
+  font-variant-numeric: tabular-nums;
+}
+.loader.nd-boot.is-boom .ndb-stage { animation: ndb-settle 300ms cubic-bezier(.2, .8, .2, 1) both; }
+.loader.nd-boot.is-done { animation: ndb-out 300ms cubic-bezier(.4, 0, .2, 1) forwards; pointer-events: none; }
+html.nd-fastboot .app.is-arriving { animation: ndb-app 380ms cubic-bezier(.2, .8, .2, 1) both; }
+
+@keyframes ndb-in     { from { opacity: 0; transform: scale(.92); } to { opacity: 1; transform: none; } }
+@keyframes ndb-draw   { to { stroke-dashoffset: 0; } }
+@keyframes ndb-node   { from { opacity: 0; transform: scale(.2); } to { opacity: 1; transform: none; } }
+@keyframes ndb-fade   { to { opacity: 1; } }
+@keyframes ndb-settle { 0% { transform: scale(1); } 45% { transform: scale(1.07); } 100% { transform: scale(1); } }
+@keyframes ndb-out    { to { opacity: 0; transform: scale(1.025); visibility: hidden; } }
+@keyframes ndb-app    { from { opacity: 0; transform: scale(.988); } to { opacity: 1; transform: none; } }
+
+[data-animations='none'] .loader.nd-boot *,
+html[data-animations='none'] .loader.nd-boot * { animation: none !important; }
+[data-animations='none'] .loader.nd-boot .ndb-mark-path { stroke-dashoffset: 0; }
+[data-animations='none'] .loader.nd-boot .ndb-node,
+[data-animations='none'] .loader.nd-boot .ndb-name,
+[data-animations='none'] .loader.nd-boot .ndb-track { opacity: 1; }
+@media (prefers-reduced-motion: reduce) {
+  .loader.nd-boot * { animation: none !important; }
+  .loader.nd-boot .ndb-mark-path { stroke-dashoffset: 0; }
+  .loader.nd-boot .ndb-node, .loader.nd-boot .ndb-name, .loader.nd-boot .ndb-track { opacity: 1; }
+  .loader.nd-boot.is-done { animation: none; opacity: 0; visibility: hidden; }
+  html.nd-fastboot .app.is-arriving { animation: none; }
+}
+
+/* ---- 4. save and close ------------------------------------------------- */
+.nd-close {
+  position: fixed; inset: 0; z-index: 2147483000;
+  display: grid; place-items: center;
+  padding: max(16px, env(safe-area-inset-top, 0px)) 16px max(16px, env(safe-area-inset-bottom, 0px));
+  background: color-mix(in srgb, var(--bg-canvas, #f6f2e9) 52%, transparent);
+  -webkit-backdrop-filter: blur(16px) saturate(1.15);
+  backdrop-filter: blur(16px) saturate(1.15);
+  animation: nd-close-in 200ms ease-out both;
+}
+.nd-close.is-leaving { animation: nd-close-out 220ms ease-in forwards; }
+.nd-close-card {
+  width: min(340px, 100%);
+  background: var(--bg-0, #fff);
+  color: var(--text-0);
+  border: 1px solid var(--border);
+  border-radius: 22px;
+  box-shadow: 0 24px 60px -20px rgba(0, 0, 0, .35), 0 2px 8px rgba(0, 0, 0, .06);
+  padding: 28px 24px 22px;
+  text-align: center;
+  animation: nd-card-in 280ms cubic-bezier(.2, .8, .2, 1) both;
+}
+.nd-close-ring { position: relative; width: 76px; height: 76px; margin: 0 auto 16px; }
+.nd-close-ring svg { width: 100%; height: 100%; display: block; transform: rotate(-90deg); }
+.nd-ring-track { fill: none; stroke: color-mix(in srgb, var(--text-0) 10%, transparent); stroke-width: 5; }
+.nd-ring-fill {
+  fill: none; stroke: var(--accent); stroke-width: 5; stroke-linecap: round;
+  stroke-dasharray: 100; stroke-dashoffset: 100;
+}
+.nd-ring-tick {
+  fill: none; stroke: var(--accent); stroke-width: 5; stroke-linecap: round; stroke-linejoin: round;
+  stroke-dasharray: 100; stroke-dashoffset: 100;
+  transform: rotate(90deg); transform-origin: 38px 38px;
+  transition: stroke-dashoffset 380ms cubic-bezier(.65, 0, .35, 1);
+}
+.nd-close-pct {
+  position: absolute; inset: 0; display: grid; place-items: center;
+  font-size: 15px; font-weight: 650; font-variant-numeric: tabular-nums; color: var(--text-0);
+  transition: opacity 160ms ease;
+}
+.nd-close.is-done .nd-close-pct { opacity: 0; }
+.nd-close.is-done .nd-ring-tick { stroke-dashoffset: 0; }
+.nd-close.is-done .nd-close-ring { animation: nd-ring-pop 420ms cubic-bezier(.2, .8, .2, 1) both; }
+.nd-close.is-failed .nd-ring-fill { stroke: #dc2626; }
+.nd-close-title { margin: 0 0 4px; font-size: 18px; font-weight: 650; letter-spacing: -0.01em; }
+.nd-close-sub { margin: 0 0 16px; font-size: 13px; line-height: 1.45; color: var(--text-2); }
+.nd-close-list { list-style: none; margin: 0 0 14px; padding: 0; text-align: left;
+  border: 1px solid var(--border); border-radius: 14px; overflow: hidden; }
+.nd-close-list li { display: flex; align-items: center; gap: 10px; padding: 10px 12px; font-size: 13.5px; }
+.nd-close-list li + li { border-top: 1px solid var(--border); }
+.nd-close-list .nd-where { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.nd-close-list .nd-state { flex: none; font-size: 12px; color: var(--text-3); }
+.nd-close-list .nd-ico { flex: none; width: 18px; height: 18px; display: grid; place-items: center; }
+.nd-close-list .nd-ico svg { width: 18px; height: 18px; display: block; }
+.nd-close-list li[data-state='busy'] .nd-ico::before {
+  content: ''; width: 12px; height: 12px; border-radius: 50%;
+  border: 2px solid color-mix(in srgb, var(--accent) 25%, transparent); border-top-color: var(--accent);
+  animation: nd-spin 700ms linear infinite;
+}
+.nd-close-list li[data-state='wait'] .nd-ico::before {
+  content: ''; width: 7px; height: 7px; border-radius: 50%; background: color-mix(in srgb, var(--text-0) 22%, transparent);
+}
+.nd-close-list li[data-state='ok'] .nd-state { color: #16a34a; }
+.nd-close-list li[data-state='later'] .nd-state { color: #b45309; }
+.nd-close-list li[data-state='fail'] .nd-state { color: #dc2626; }
+.nd-close-note { margin: 0; font-size: 12.5px; color: var(--text-3); min-height: 1.4em; }
+.nd-close-actions { display: flex; gap: 8px; justify-content: center; margin-top: 14px; flex-wrap: wrap; }
+.nd-close-actions[hidden] { display: none; }
+
+@keyframes nd-close-in  { from { opacity: 0; } to { opacity: 1; } }
+@keyframes nd-close-out { to { opacity: 0; } }
+@keyframes nd-card-in   { from { opacity: 0; transform: translateY(8px) scale(.97); } to { opacity: 1; transform: none; } }
+@keyframes nd-ring-pop  { 0% { transform: scale(1); } 40% { transform: scale(1.08); } 100% { transform: scale(1); } }
+@keyframes nd-spin      { to { transform: rotate(360deg); } }
+
+[data-animations='none'] .nd-close, [data-animations='none'] .nd-close-card,
+[data-animations='none'] .nd-close-ring { animation: none !important; }
+@media (prefers-reduced-motion: reduce) {
+  .nd-close, .nd-close-card, .nd-close.is-done .nd-close-ring { animation: none !important; }
+  .nd-ring-tick { transition: none; }
+}
+
+/* settings rows added by this block */
+.nd-settings-status { font-size: 12.5px; color: var(--text-3); margin-top: 4px; }
+
+</style>
+<script id="nd-v1093-script">
+(function () {
+  'use strict';
+
+  /* =======================================================================
+   * v10.9.3 - CALM SAVING
+   *
+   * THE PROBLEM
+   *
+   * Every pause of 400ms while typing wrote the whole note to the browser
+   * database, rewrote the .md file in a connected folder, rewrote the undo
+   * history 1.4s later and the activity journal 2s later. A paragraph cost
+   * dozens of storage writes. GitHub, meanwhile, was never backed up while
+   * you worked at all.
+   *
+   * THE SHAPE OF THE FIX
+   *
+   *   * Your text reaches the app's memory exactly as fast as before, so
+   *     search, the graph, tasks, backlinks and exports never see stale text.
+   *   * Only the physical writes are grouped: at most one per interval
+   *     (Settings -> Storage, 10 seconds by default).
+   *   * Saving happens IMMEDIATELY - never on a timer - whenever the moment
+   *     matters: switching notes, switching apps or tabs, locking the phone,
+   *     pressing Ctrl+S, tapping the save status, closing.
+   *   * At the moment the page goes away, the unsaved text is also written,
+   *     synchronously, to a tiny rescue slot (localStorage commits before the
+   *     page can be torn down; IndexedDB cannot promise that). The next start
+   *     compares and restores anything that did not land, and says so.
+   *   * GitHub is backed up on its own interval, only when something changed,
+   *     never mid-sentence, and when you leave the app.
+   *
+   * Nothing in here is required for the app to run. If any part of it fails,
+   * the store falls back to writing straight away, exactly as v10.9.2 did.
+   * ===================================================================== */
+
+  var N = window.NODALIS;
+  if (!N || !N.util || !N.bus || !N.db) return;
+  var U = N.util;
+  var bus = N.bus;
+  var el = U.el;
+
+  try { document.documentElement.classList.add('nd-fastboot'); } catch (e) { /* fine */ }
+
+  /* ------------------------------------------------------------ settings */
+
+  var DEFAULTS = {
+    autosaveInterval: 10,     // seconds; 0 = write after every pause, as before
+    githubBackupEvery: 10,    // minutes; 0 = off (start, reconnect and by hand only)
+    typingGlow: true,
+    warnGithubOnClose: false,
+  };
+
+  function setting(key) {
+    var fb = DEFAULTS[key];
+    try {
+      if (N.store && N.store.getSetting) {
+        var v = N.store.getSetting(key, fb);
+        return (v === undefined || v === null || v === '') ? fb : v;
+      }
+    } catch (e) { /* too early */ }
+    return fb;
+  }
+
+  function intervalSec() {
+    var n = Number(setting('autosaveInterval'));
+    if (!isFinite(n) || n < 0) n = DEFAULTS.autosaveInterval;
+    return Math.min(600, n);
+  }
+  function intervalMs() { return Math.max(1000, intervalSec() * 1000); }
+
+  function isEnabled() {
+    try {
+      return intervalSec() > 0 && !!(N.store && N.store.state && N.store.state.loaded);
+    } catch (e) { return false; }
+  }
+
+  function storeReady() {
+    return !!(N.store && N.store.state && N.store.state.loaded && N.store.state.notes);
+  }
+
+  function describeErr(err) {
+    try { if (U.describeError) return U.describeError(err); } catch (e) { /* fall through */ }
+    return (err && err.message) || 'The save did not go through.';
+  }
+
+  /* ------------------------------------------------------- the save queue */
+
+  var pending = new Map();          // noteId -> sequence number of its latest edit
+  var seq = 0;
+  var timer = null;
+  var firstAt = 0;
+  var flushing = null;
+  var status = 'idle';              // idle | saving | error
+  var failures = 0;
+  var lastError = '';
+  var lastSavedAt = 0;
+  var RETRY = [2000, 5000, 15000, 30000, 60000];
+
+  function defer(note) {
+    if (!note || !note.id) return;
+    if (!pending.size) firstAt = Date.now();
+    pending.set(note.id, ++seq);
+    schedule();
+    changed();
+  }
+
+  function schedule(wait) {
+    if (!pending.size) return;
+    if (timer && wait === undefined) return;
+    clearTimeout(timer);
+    var w = wait !== undefined ? wait : Math.max(250, intervalMs() - (Date.now() - firstAt));
+    timer = setTimeout(function () { timer = null; flush('interval'); }, w);
+  }
+
+  function result() {
+    return { ok: status !== 'error' && pending.size === 0, pending: pending.size, error: lastError };
+  }
+
+  /**
+   * Write everything that is waiting. Safe to call at any time, from
+   * anywhere, as often as you like: concurrent calls share one run, and a
+   * call made during a run waits for it and then writes whatever arrived
+   * in the meantime. Never rejects.
+   */
+  function flush(reason) {
+    if (flushing) {
+      return flushing.then(function () { return pending.size ? flush(reason) : result(); });
+    }
+    clearTimeout(timer);
+    timer = null;
+    if (!pending.size || !storeReady()) return Promise.resolve(result());
+    status = 'saving';
+    changed();
+    flushing = run().then(
+      function (r) { flushing = null; return r; },
+      function () { flushing = null; return result(); }
+    );
+    return flushing;
+  }
+
+  async function run() {
+    var ids = Array.from(pending.keys());
+    var failed = 0, msg = '';
+    for (var i = 0; i < ids.length; i++) {
+      var id = ids[i];
+      var mark = pending.get(id);
+      var note = N.store.state.notes.get(id);
+      /* Deleted or moved to the trash while it waited: the path that removed
+         it already wrote what needed writing. */
+      if (!note) { pending.delete(id); continue; }
+      try {
+        var before = N.db.writeFailures ? N.db.writeFailures() : 0;
+        await N.db.put('notes', note);
+        if (N.db.writeFailures && N.db.writeFailures() > before) {
+          var h = N.db.health ? N.db.health() : null;
+          throw new Error((h && h.lastWriteError) || 'This browser refused to save the note.');
+        }
+        if (N.vault && N.vault.saveNote) {
+          try { N.vault.saveNote(note); } catch (e) { /* the folder reports its own trouble */ }
+        }
+        /* Typed into again while this write was in flight? Then it stays
+           queued: the copy just written is already one keystroke old. */
+        if (pending.get(id) === mark) pending.delete(id);
+      } catch (err) {
+        failed++;
+        msg = describeErr(err);
+        console.error('[nodalis] save failed', err);
+      }
+    }
+
+    if (failed) {
+      failures++;
+      lastError = msg;
+      status = 'error';
+      schedule(RETRY[Math.min(failures - 1, RETRY.length - 1)]);
+      if (failures >= 3) {
+        try {
+          N.toast.error(msg + ' Your text is still here and Nodalis keeps trying.', {
+            ms: 0, title: 'Not saved yet', key: 'nd-save-fail',
+            action: { label: 'Try again', onClick: function () { failures = 0; flush('retry'); } },
+          });
+        } catch (e) { /* toast not up */ }
+      }
+      changed();
+      return result();
+    }
+
+    failures = 0;
+    lastError = '';
+    status = 'idle';
+    lastSavedAt = Date.now();
+    try { N.toast.dismiss('nd-save-fail'); } catch (e) { /* fine */ }
+    if (pending.size) { firstAt = Date.now(); schedule(); }
+    else clearRescue();
+    try { bus.emit('persist:flushed', { at: lastSavedAt }); } catch (e) { /* fine */ }
+    changed();
+    return result();
+  }
+
+  function changed() {
+    try { bus.emit('persist:state', { pending: pending.size, status: status, lastSavedAt: lastSavedAt }); }
+    catch (e) { /* fine */ }
+    paintPip();
+  }
+
+  /* ------------------------------------------------ the rescue slot */
+
+  var RESCUE_KEY = 'nodalis.rescue.v1';
+  var rescueWritten = false;
+
+  /** Pull the editor's latest text into memory. Synchronous by design. */
+  function pullEditor() {
+    try { if (N.editor && N.editor.isDirty && N.editor.isDirty()) N.editor.flushSave(); } catch (e) { /* not up */ }
+  }
+
+  /**
+   * Called at the moment the page may be about to disappear. One small
+   * synchronous write, and only when there is genuinely something unsaved.
+   * Returns true when everything unsaved is now safe.
+   */
+  function rescueNow() {
+    pullEditor();
+    if (!pending.size || !storeReady()) return true;
+    var list = [];
+    pending.forEach(function (_, id) {
+      var n = N.store.state.notes.get(id);
+      if (n && typeof n.content === 'string') list.push({ id: id, c: n.content, u: n.updatedAt || Date.now() });
+    });
+    if (!list.length) return true;
+    try {
+      localStorage.setItem(RESCUE_KEY, JSON.stringify({ v: 1, at: Date.now(), notes: list }));
+      rescueWritten = true;
+      return true;
+    } catch (e) {
+      /* Too large for the slot. Keep the note being written, which is the
+         one with the newest keystrokes in it. */
+      try {
+        var active = N.store.state.activeNoteId;
+        var one = list.filter(function (x) { return x.id === active; });
+        if (one.length) {
+          localStorage.setItem(RESCUE_KEY, JSON.stringify({ v: 1, at: Date.now(), notes: one }));
+          rescueWritten = true;
+          return list.length === 1;
+        }
+      } catch (e2) { /* storage unavailable */ }
+      return false;
+    }
+  }
+
+  function clearRescue() {
+    if (!rescueWritten) return;
+    rescueWritten = false;
+    try { localStorage.removeItem(RESCUE_KEY); } catch (e) { /* fine */ }
+  }
+
+  async function restoreRescue() {
+    var raw = null;
+    try { raw = localStorage.getItem(RESCUE_KEY); } catch (e) { return; }
+    if (!raw || !storeReady()) return;
+    var data = null;
+    try { data = JSON.parse(raw); } catch (e) { data = null; }
+    var restored = [];
+    if (data && Array.isArray(data.notes)) {
+      for (var i = 0; i < data.notes.length; i++) {
+        var r = data.notes[i];
+        if (!r || typeof r.c !== 'string') continue;
+        var note = N.store.state.notes.get(r.id);
+        if (!note) continue;
+        if (note.content === r.c) {
+          /* The database got it, but a connected folder may not have. */
+          try { if (N.vault && N.vault.isFolderMode && N.vault.isFolderMode()) N.vault.saveNote(note); } catch (e) { /* fine */ }
+          continue;
+        }
+        /* A newer copy already exists - another tab, another device, a disk
+           edit. Never overwrite newer with older. */
+        if ((Number(note.updatedAt) || 0) > (Number(r.u) || 0)) continue;
+        try {
+          await N.store.updateNoteContent(r.id, r.c);
+          restored.push(N.store.noteTitle ? N.store.noteTitle(note) : (note.title || 'a note'));
+        } catch (e) { console.warn('[nodalis] could not restore rescued text', e); }
+      }
+    }
+    try { localStorage.removeItem(RESCUE_KEY); } catch (e) { /* fine */ }
+    if (restored.length) {
+      try {
+        N.toast.success(
+          restored.length === 1
+            ? 'Your last edits to “' + restored[0] + '” were restored from when Nodalis closed.'
+            : 'Your last edits to ' + restored.length + ' notes were restored from when Nodalis closed.',
+          { ms: 7000, title: 'Nothing lost', key: 'nd-rescued' });
+      } catch (e) { /* fine */ }
+    }
+  }
+
+  /* --------------------------------------------------------------- GitHub */
+
+  var ghSyncing = false;
+  var ghSince = 0;
+  var ghLastTry = 0;
+  var lastInputAt = 0;
+  var flashText = '';
+  var flashTimer = null;
+
+  bus.on('sync:start', function () { ghSyncing = true; ghSince = Date.now(); });
+  ['sync:done', 'sync:failed', 'sync:queued', 'sync:offline'].forEach(function (evt) {
+    bus.on(evt, function () { ghSyncing = false; });
+  });
+  bus.on('sync:done', function (d) {
+    if (d && d.direction === 'push') flash('Backed up');
+    paintPip();
+  });
+
+  function ghConnected() {
+    try { return !!(N.github && N.github.isConnected && N.github.isConnected()); } catch (e) { return false; }
+  }
+  function ghBusy() { return ghSyncing && Date.now() - ghSince < 180000; }
+  function ghDirtyCheap() {
+    try { return N.store.state.settings.githubDirty === true; } catch (e) { return false; }
+  }
+  function ghHasPending() {
+    try { return N.github.hasPending ? !!N.github.hasPending() : ghDirtyCheap(); } catch (e) { return ghDirtyCheap(); }
+  }
+  function online() { return navigator.onLine !== false; }
+
+  /**
+   * A quiet backup. `reason` is 'interval', 'hidden' or 'manual'.
+   * Resolves to 'ok' | 'uptodate' | 'offline' | 'busy' | 'skipped' | 'failed'.
+   */
+  async function ghBackup(reason) {
+    if (!storeReady() || !ghConnected()) return 'skipped';
+    if (ghBusy()) return 'busy';
+    if (!online()) return 'offline';
+    var mins = Number(setting('githubBackupEvery')) || 0;
+    if (reason === 'interval' || reason === 'hidden') {
+      if (!mins) return 'skipped';
+      if (!ghDirtyCheap()) return 'skipped';
+      if (Date.now() - ghLastTry < 90000) return 'skipped';
+    }
+    if (reason === 'interval') {
+      var last = Number(N.store.state.settings.githubSyncedAt) || 0;
+      if (Date.now() - last < mins * 60000) return 'skipped';
+      /* Never in the middle of a sentence: a conflict question popping up
+         under your fingers is worse than a backup ten seconds late. */
+      if (Date.now() - lastInputAt < 15000) return 'skipped';
+    }
+    ghLastTry = Date.now();
+    try {
+      if (pending.size) await flush('github');
+      if (!ghHasPending()) return 'uptodate';
+      await N.github.push({ silent: true, auto: true, quiet: true });
+      return ghHasPending() ? 'failed' : 'ok';
+    } catch (e) {
+      return online() ? 'failed' : 'offline';
+    }
+  }
+
+  /* --------------------------------------------------------- where it is */
+
+  function places() {
+    var out = [];
+    var degraded = false;
+    try { degraded = !!(N.db.isDegraded && N.db.isDegraded()); } catch (e) { /* fine */ }
+    out.push({ id: 'device', label: degraded ? 'This session only' : 'This device', degraded: degraded });
+    try {
+      if (N.vault && N.vault.isFolderMode && N.vault.isFolderMode()) {
+        out.push({ id: 'folder', label: 'Folder “' + (N.vault.state.name || 'your folder') + '”' });
+      } else if (N.vault && N.vault.state && N.vault.state.handle && N.vault.state.status === 'permission') {
+        out.push({ id: 'folder', label: 'Folder “' + (N.vault.state.name || 'your folder') + '”', needsReconnect: true });
+      }
+    } catch (e) { /* fine */ }
+    if (ghConnected()) out.push({ id: 'github', label: 'GitHub' });
+    return out;
+  }
+
+  function ago(ts) {
+    if (!ts) return 'never';
+    try { if (U.relativeTime) return U.relativeTime(ts); } catch (e) { /* fall through */ }
+    var s = Math.round((Date.now() - ts) / 1000);
+    if (s < 45) return 'just now';
+    if (s < 3600) return Math.round(s / 60) + ' min ago';
+    return Math.round(s / 3600) + ' h ago';
+  }
+
+  function cadenceText() {
+    var sec = intervalSec();
+    if (!sec) return 'Every pause in your typing is written straight away.';
+    var span = sec < 60 ? sec + ' seconds' : (sec === 60 ? 'minute' : Math.round(sec / 60) + ' minutes');
+    return 'Changes are written every ' + span + ', and instantly when you switch notes, leave the app or close it.';
+  }
+
+  function describeState(st) {
+    var p = places();
+    var names = p.filter(function (x) { return x.id !== 'github' && !x.needsReconnect; })
+      .map(function (x) { return x.label === 'This device' ? 'this device' : x.label; });
+    var where = names.join(' and ');
+    var lines = [];
+    if (st === 'pending') lines.push('Your latest changes are safe in Nodalis and will be saved to ' + where + ' within ' + intervalSec() + ' s — or instantly if you switch notes or leave.');
+    else if (st === 'saving') lines.push('Saving to ' + where + '…');
+    else if (st === 'error') lines.push('Not saved yet: ' + lastError + ' Retrying automatically.');
+    else lines.push('All changes saved to ' + where + (lastSavedAt ? ' (' + ago(lastSavedAt) + ')' : '') + '.');
+    if (ghConnected()) {
+      var gAt = 0;
+      try { gAt = Number(N.store.state.settings.githubSyncedAt) || 0; } catch (e) { /* fine */ }
+      if (ghDirtyCheap()) {
+        var mins = Number(setting('githubBackupEvery')) || 0;
+        lines.push('GitHub: changes waiting' + (mins ? ' — next backup within ' + mins + ' min' : '') + '. Last backup ' + ago(gAt) + '.');
+      } else {
+        lines.push('GitHub: backed up ' + ago(gAt) + '.');
+      }
+    }
+    p.forEach(function (x) { if (x.needsReconnect) lines.push(x.label + ' needs reconnecting in Settings → Storage.'); });
+    lines.push('Click to save everything now.');
+    return lines.join('\n');
+  }
+
+  /* ---------------------------------------------------- the save status */
+
+  function flash(text) {
+    flashText = text;
+    clearTimeout(flashTimer);
+    flashTimer = setTimeout(function () { flashText = ''; paintPip(); }, 2400);
+    paintPip();
+  }
+
+  function pipState() {
+    var ed = false;
+    try { ed = !!(N.editor && N.editor.isDirty && N.editor.isDirty()); } catch (e) { /* fine */ }
+    if (status === 'error') return 'error';
+    if (status === 'saving') return 'saving';
+    if (ed || pending.size) return 'pending';
+    return 'saved';
+  }
+
+  function paintPip() {
+    var pip = document.getElementById('save-pip');
+    var label = document.getElementById('save-label');
+    if (!pip || !label) return;
+    var st = pipState();
+    var text = st === 'error' ? 'Retrying…'
+      : st === 'saving' ? 'Saving…'
+        : st === 'pending' ? 'Edited'
+          : (flashText || 'Saved');
+    pip.classList.toggle('is-dirty', st === 'pending');
+    pip.classList.toggle('is-saved', st === 'saved');
+    pip.classList.toggle('nd-saving', st === 'saving');
+    pip.classList.toggle('nd-error', st === 'error');
+    if (label.textContent !== text) label.textContent = text;
+    pip.setAttribute('data-state', st);
+    pip.title = describeState(st);
+    if (!pip.__ndBound) {
+      pip.__ndBound = true;
+      pip.setAttribute('role', 'button');
+      pip.setAttribute('tabindex', '0');
+      pip.setAttribute('aria-label', 'Save status. Activate to save everything now.');
+      pip.addEventListener('click', function () { saveNow({ github: 'always' }); });
+      pip.addEventListener('keydown', function (e) {
+        if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); saveNow(); }
+      });
+    }
+  }
+
+  var savingNow = false;
+  /**
+   * Save everywhere, now. `opts.github`:
+   *   'always'  - tapping the save status, the Settings button (default)
+   *   'stale'   - Ctrl+S: only if the last backup is over two minutes old,
+   *               so a habit of pressing Ctrl+S does not become a commit a
+   *               minute in your repository.
+   */
+  async function saveNow(opts) {
+    var o = opts || {};
+    if (savingNow) return;
+    savingNow = true;
+    try {
+      pullEditor();
+      var r = await flush('manual');
+      var folderOk = true;
+      try { if (N.vault && N.vault.isFolderMode && N.vault.isFolderMode()) folderOk = await N.vault.flushNow(); } catch (e) { folderOk = false; }
+      var gh = 'skipped';
+      var ghWanted = ghConnected() && ghHasPending();
+      if (ghWanted && o.github === 'stale') {
+        var gLast = Number(N.store.state.settings.githubSyncedAt) || 0;
+        if (Date.now() - gLast < 120000) ghWanted = false;
+      }
+      if (ghWanted) gh = await ghBackup('manual');
+      if (!r.ok) {
+        N.toast.error('Not saved yet: ' + (r.error || 'the browser refused the write.') + ' Nodalis keeps trying.', { ms: 5000, key: 'nd-save-now' });
+        return;
+      }
+      var p = places().filter(function (x) { return x.id !== 'github' && !x.needsReconnect; })
+        .map(function (x) { return x.label === 'This device' ? 'this device' : x.label; });
+      var msg = 'Saved to ' + p.join(' and ');
+      if (!folderOk) msg += ' (the folder write is still retrying)';
+      if (gh === 'ok' || gh === 'uptodate') msg += ', and backed up to GitHub';
+      else if (gh === 'offline') msg += '. GitHub will catch up when you are online';
+      else if (gh === 'failed') msg += '. GitHub backup will retry shortly';
+      N.toast.success(msg + '.', { ms: 2600, key: 'nd-save-now' });
+    } catch (e) {
+      console.warn('[nodalis] save now', e);
+    } finally {
+      savingNow = false;
+      paintPip();
+    }
+  }
+
+  /* ------------------------------------------------------ save and close */
+
+  var SVG_NS = 'http://www.w3.org/2000/svg';
+  var closing = false;
+
+  function svg(tag, attrs) {
+    var n = document.createElementNS(SVG_NS, tag);
+    Object.keys(attrs || {}).forEach(function (k) { n.setAttribute(k, attrs[k]); });
+    return n;
+  }
+
+  function checkIcon(color) {
+    var s = svg('svg', { viewBox: '0 0 18 18', 'aria-hidden': 'true' });
+    s.appendChild(svg('circle', { cx: '9', cy: '9', r: '8', fill: color, opacity: '0.14' }));
+    s.appendChild(svg('path', { d: 'M5.4 9.2l2.4 2.4 4.8-5', fill: 'none', stroke: color, 'stroke-width': '1.8', 'stroke-linecap': 'round', 'stroke-linejoin': 'round' }));
+    return s;
+  }
+  function clockIcon(color) {
+    var s = svg('svg', { viewBox: '0 0 18 18', 'aria-hidden': 'true' });
+    s.appendChild(svg('circle', { cx: '9', cy: '9', r: '7.2', fill: 'none', stroke: color, 'stroke-width': '1.6' }));
+    s.appendChild(svg('path', { d: 'M9 5.3V9l2.4 1.6', fill: 'none', stroke: color, 'stroke-width': '1.6', 'stroke-linecap': 'round' }));
+    return s;
+  }
+  function crossIcon(color) {
+    var s = svg('svg', { viewBox: '0 0 18 18', 'aria-hidden': 'true' });
+    s.appendChild(svg('circle', { cx: '9', cy: '9', r: '8', fill: color, opacity: '0.14' }));
+    s.appendChild(svg('path', { d: 'M6.2 6.2l5.6 5.6M11.8 6.2l-5.6 5.6', fill: 'none', stroke: color, 'stroke-width': '1.8', 'stroke-linecap': 'round' }));
+    return s;
+  }
+
+  function buildCloseUi() {
+    var root = el('div.nd-close', { role: 'dialog', 'aria-modal': 'true', 'aria-labelledby': 'nd-close-title' });
+    var card = el('div.nd-close-card');
+    var ring = el('div.nd-close-ring');
+    var s = svg('svg', { viewBox: '0 0 76 76', 'aria-hidden': 'true' });
+    s.appendChild(svg('circle', { class: 'nd-ring-track', cx: '38', cy: '38', r: '32' }));
+    var fill = svg('circle', { class: 'nd-ring-fill', cx: '38', cy: '38', r: '32', pathLength: '100' });
+    s.appendChild(fill);
+    s.appendChild(svg('path', { class: 'nd-ring-tick', d: 'M26 39l8.5 8.5L51 30', pathLength: '100' }));
+    ring.appendChild(s);
+    var pct = el('span.nd-close-pct', { 'aria-hidden': 'true' }, '0%');
+    ring.appendChild(pct);
+    card.appendChild(ring);
+    var title = el('h2.nd-close-title#nd-close-title', null, 'Saving your work');
+    var sub = el('p.nd-close-sub', null, 'Making sure every change is stored before Nodalis closes.');
+    card.appendChild(title);
+    card.appendChild(sub);
+    var list = el('ul.nd-close-list');
+    card.appendChild(list);
+    var note = el('p.nd-close-note', { role: 'status', 'aria-live': 'polite' }, '');
+    card.appendChild(note);
+    var actions = el('div.nd-close-actions', { hidden: true });
+    card.appendChild(actions);
+    root.appendChild(card);
+
+    var shown = 0, target = 0, raf = 0;
+    function tick() {
+      raf = 0;
+      if (shown < target) {
+        shown = Math.min(target, shown + Math.max(0.6, (target - shown) * 0.14));
+        fill.style.strokeDashoffset = String(100 - shown);
+        pct.textContent = Math.round(shown) + '%';
+        raf = requestAnimationFrame(tick);
+      }
+    }
+    var reduced = false;
+    try {
+      reduced = (window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches) ||
+        (N.store.state.settings.animations === 'none');
+    } catch (e) { /* fine */ }
+
+    return {
+      root: root,
+      setProgress: function (v) {
+        target = Math.max(target, Math.min(100, v));
+        if (reduced) { shown = target; fill.style.strokeDashoffset = String(100 - shown); pct.textContent = Math.round(shown) + '%'; return; }
+        if (!raf) raf = requestAnimationFrame(tick);
+      },
+      reached: function () { return shown >= target - 0.5; },
+      addItem: function (id, label) {
+        var li = el('li', { dataset: { id: id, state: 'wait' } });
+        li.appendChild(el('span.nd-ico'));
+        li.appendChild(el('span.nd-where', null, label));
+        li.appendChild(el('span.nd-state', null, 'Waiting'));
+        list.appendChild(li);
+        return li;
+      },
+      setItem: function (li, state, text) {
+        if (!li) return;
+        li.dataset.state = state;
+        var ico = li.querySelector('.nd-ico');
+        U.clear(ico);
+        if (state === 'ok') ico.appendChild(checkIcon('#16a34a'));
+        else if (state === 'later') ico.appendChild(clockIcon('#b45309'));
+        else if (state === 'fail') ico.appendChild(crossIcon('#dc2626'));
+        li.querySelector('.nd-state').textContent = text;
+      },
+      title: function (t) { title.textContent = t; },
+      sub: function (t) { sub.textContent = t; },
+      note: function (t) { note.textContent = t; },
+      done: function () { root.classList.add('is-done'); },
+      failed: function () { root.classList.add('is-failed'); },
+      actions: function (buttons) {
+        U.clear(actions);
+        buttons.forEach(function (b) {
+          var btn = el('button.btn' + (b.primary ? '.btn-primary' : ''), { type: 'button' }, b.label);
+          btn.addEventListener('click', b.onClick);
+          actions.appendChild(btn);
+        });
+        actions.hidden = !buttons.length;
+        var first = actions.querySelector('button');
+        if (first) { try { first.focus({ preventScroll: true }); } catch (e) { /* fine */ } }
+      },
+      remove: function () {
+        if (raf) cancelAnimationFrame(raf);
+        root.classList.add('is-leaving');
+        setTimeout(function () { if (root.parentNode) root.parentNode.removeChild(root); }, 240);
+      },
+    };
+  }
+
+  function sleep(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
+
+  function waitFor(ui) {
+    return new Promise(function (resolve) {
+      var started = Date.now();
+      (function check() {
+        if (ui.reached() || Date.now() - started > 1500) return resolve();
+        requestAnimationFrame(check);
+      })();
+    });
+  }
+
+  /**
+   * Push to GitHub for the close sheet. Gives up - honestly - if it takes
+   * too long, or if GitHub needs a decision (another device pushed first),
+   * because that question deserves the next session's full attention rather
+   * than a dialog hidden behind a closing window.
+   */
+  function ghPushForClose() {
+    return new Promise(function (resolve) {
+      var settled = false;
+      var finish = function (v) { if (settled) return; settled = true; clearTimeout(t); if (mo) mo.disconnect(); resolve(v); };
+      var t = setTimeout(function () { finish('slow'); }, 25000);
+      var mo = null;
+      try {
+        mo = new MutationObserver(function (records) {
+          for (var i = 0; i < records.length; i++) {
+            var added = records[i].addedNodes;
+            for (var j = 0; j < added.length; j++) {
+              var n = added[j];
+              if (n.nodeType === 1 && !n.classList.contains('nd-close') &&
+                  (n.getAttribute('role') === 'dialog' || (n.querySelector && n.querySelector('[role="dialog"]')))) {
+                finish('conflict');
+                return;
+              }
+            }
+          }
+        });
+        mo.observe(document.body, { childList: true, subtree: false });
+      } catch (e) { mo = null; }
+      Promise.resolve()
+        .then(function () { return N.github.push({ silent: true, auto: true, quiet: true }); })
+        .then(function () { finish(ghHasPending() ? 'failed' : 'ok'); })
+        .catch(function () { finish(online() ? 'failed' : 'offline'); });
+    });
+  }
+
+  async function saveAndClose() {
+    if (closing) return;
+    if (!storeReady()) { tryClose(null); return; }
+    closing = true;
+    var ui = buildCloseUi();
+    document.body.appendChild(ui.root);
+    var onKey = function (e) { if (e.key === 'Escape' && ui.root.classList.contains('is-settled')) { e.preventDefault(); dismiss(); } };
+    document.addEventListener('keydown', onKey, true);
+    function dismiss() {
+      document.removeEventListener('keydown', onKey, true);
+      ui.remove();
+      closing = false;
+      paintPip();
+    }
+
+    var where = places();
+    var items = {};
+    where.forEach(function (p) { items[p.id] = ui.addItem(p.id, p.label); });
+    var steps = where.length;
+    var stepDone = 0;
+    var stepPct = function () { return (stepDone / steps) * 100; };
+    var creep = setInterval(function () { ui.setProgress(Math.min(stepPct() + (100 / steps) * 0.7, 99)); }, 120);
+    ui.setProgress(4);
+
+    var deviceOk = false, laterNotes = [];
+    var startedAt = Date.now();
+    try {
+      /* 1. this device */
+      ui.setItem(items.device, 'busy', 'Saving');
+      pullEditor();
+      var r = await flush('close');
+      deviceOk = r.ok;
+      if (where[0].degraded) {
+        ui.setItem(items.device, 'fail', 'Storage unavailable');
+        deviceOk = false;
+      } else {
+        ui.setItem(items.device, deviceOk ? 'ok' : 'fail', deviceOk ? 'Saved' : 'Not saved');
+      }
+      stepDone++; ui.setProgress(stepPct());
+
+      /* 2. the folder */
+      if (items.folder) {
+        var folder = where.filter(function (p) { return p.id === 'folder'; })[0];
+        if (folder.needsReconnect) {
+          ui.setItem(items.folder, 'later', 'Reconnect needed');
+          laterNotes.push('The folder needs reconnecting — your notes are safe on this device.');
+        } else {
+          ui.setItem(items.folder, 'busy', 'Writing');
+          var fOk = false;
+          try { fOk = await N.vault.flushNow(); } catch (e) { fOk = false; }
+          ui.setItem(items.folder, fOk ? 'ok' : 'later', fOk ? 'Saved' : 'Will retry');
+          if (!fOk) laterNotes.push('Some folder writes will finish next time Nodalis opens.');
+        }
+        stepDone++; ui.setProgress(stepPct());
+      }
+
+      /* 3. GitHub */
+      if (items.github) {
+        if (!online()) {
+          ui.setItem(items.github, 'later', 'When online');
+          if (ghDirtyCheap()) laterNotes.push('GitHub will be backed up automatically when you are next online.');
+        } else if (deviceOk && ghHasPending()) {
+          ui.setItem(items.github, 'busy', 'Backing up');
+          var g = await ghPushForClose();
+          if (g === 'ok') ui.setItem(items.github, 'ok', 'Backed up');
+          else if (g === 'conflict') {
+            ui.setItem(items.github, 'later', 'Needs a choice');
+            laterNotes.push('Another device changed GitHub — you will choose what to keep next time.');
+          } else if (g === 'offline') {
+            ui.setItem(items.github, 'later', 'When online');
+            laterNotes.push('GitHub will be backed up automatically when you are next online.');
+          } else {
+            ui.setItem(items.github, 'later', 'Next time');
+            laterNotes.push('GitHub backup will finish next time Nodalis opens.');
+          }
+        } else if (!deviceOk) {
+          ui.setItem(items.github, 'later', 'Waiting');
+        } else {
+          ui.setItem(items.github, 'ok', 'Up to date');
+        }
+        stepDone++; ui.setProgress(stepPct());
+      }
+    } catch (err) {
+      console.error('[nodalis] save and close', err);
+    } finally {
+      clearInterval(creep);
+    }
+
+    if (!deviceOk) {
+      ui.failed();
+      ui.title('Not saved yet');
+      ui.sub('This browser did not accept the last write. Your text is still open, so nothing has been lost.');
+      ui.note(lastError || '');
+      ui.root.classList.add('is-settled');
+      ui.actions([
+        { label: 'Try again', primary: true, onClick: function () { dismiss(); setTimeout(saveAndClose, 260); } },
+        { label: 'Export a copy', onClick: function () { try { N.commands.run('export.vault'); } catch (e) { /* fine */ } } },
+        { label: 'Keep writing', onClick: dismiss },
+      ]);
+      return;
+    }
+
+    /* Let the ring be SEEN to arrive. A save that took 30ms still gets its
+       moment, because the point of this screen is the confirmation. */
+    var minimum = 650 - (Date.now() - startedAt);
+    if (minimum > 0) await sleep(minimum);
+    ui.setProgress(100);
+    await waitFor(ui);
+    ui.done();
+    ui.title(laterNotes.length ? 'Saved on this device' : 'All saved');
+    ui.sub(laterNotes.length ? laterNotes.join(' ') : 'Every change is stored. See you next time.');
+    ui.note('Closing Nodalis…');
+    try { if (N.haptics && N.haptics.buzz) N.haptics.buzz('success'); } catch (e) { /* fine */ }
+    await sleep(900);
+    tryClose(ui, dismiss);
+  }
+
+  function tryClose(ui, dismiss) {
+    try { window.close(); } catch (e) { /* refused */ }
+    setTimeout(function () {
+      if (document.hidden) return;   // it closed
+      if (!ui) {
+        try { N.toast.info('Everything is saved. You can close this tab now.', { ms: 6000, key: 'leave' }); } catch (e) { /* fine */ }
+        return;
+      }
+      var standalone = false;
+      try { standalone = !!(N.pwa && N.pwa.isStandalone && N.pwa.isStandalone()); } catch (e) { /* fine */ }
+      ui.root.classList.add('is-settled');
+      ui.note(standalone
+        ? 'This device does not let apps close themselves — close it the usual way. It is completely safe to.'
+        : 'Browsers do not let a page close its own tab — it is completely safe to close it now.');
+      ui.actions([{ label: 'Keep writing', primary: true, onClick: dismiss }]);
+    }, 450);
+  }
+
+  /* ---------------------------------------------------- leaving the page */
+
+  function onHidden() {
+    rescueNow();
+    flush('hidden');
+    ghBackup('hidden');
+  }
+
+  document.addEventListener('visibilitychange', function () {
+    if (document.visibilityState === 'hidden') onHidden();
+  });
+  window.addEventListener('pagehide', function () { rescueNow(); flush('pagehide'); });
+  document.addEventListener('freeze', function () { rescueNow(); flush('freeze'); });
+
+  /**
+   * Called from the app's own beforeunload handler. Returns true only when
+   * the browser's "Leave site?" question is genuinely warranted - which,
+   * with the rescue slot in place, is almost never.
+   */
+  function onBeforeUnload() {
+    var safe = rescueNow();
+    flush('unload');
+    if (!safe && pending.size) return true;
+    try {
+      if (N.vault && N.vault.isFolderMode && N.vault.isFolderMode()) {
+        /* Renames and deletions queued for the folder in the last moment
+           have no rescue copy. Those, and only those, still ask. */
+        var other = N.vault.pending() - pending.size;
+        if (other > 0 && N.vault.state.status === 'syncing') return true;
+      }
+    } catch (e) { /* fine */ }
+    if (setting('warnGithubOnClose') === true && ghConnected() && ghDirtyCheap()) return true;
+    return false;
+  }
+
+  /* ---------------------------------------------- steady typing support */
+
+  var previewIntentAt = 0;
+  var previewPointer = false;
+  function markPreviewIntent() { previewIntentAt = Date.now(); }
+
+  N.steady = {
+    /** Has the person actually moved the preview, as opposed to the preview
+        moving because it was redrawn? */
+    previewIntent: function () { return previewPointer || Date.now() - previewIntentAt < 1200; },
+  };
+
+  function initSteady() {
+    var ta = N.editor && N.editor.getTextarea && N.editor.getTextarea();
+    if (ta && !ta.__ndSteady) {
+      ta.__ndSteady = true;
+      /*
+       * Replacing a textarea's value moves its scroll position as a side
+       * effect. Smart lists, indenting, undo, the formatting buttons and the
+       * slash menu all replace the value, which is the "text jumps when I
+       * press Enter" report. Keep the view where it was; the caret placement
+       * that follows still brings the caret into view if it needs to be.
+       */
+      try {
+        var proto = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value');
+        if (proto && proto.get && proto.set) {
+          Object.defineProperty(ta, 'value', {
+            configurable: true,
+            enumerable: true,
+            get: function () { return proto.get.call(this); },
+            set: function (v) {
+              var keep = document.activeElement === this;
+              var st = this.scrollTop;
+              var pane = this.parentElement;
+              var pst = pane ? pane.scrollTop : 0;
+              proto.set.call(this, v);
+              if (keep) {
+                if (this.scrollTop !== st) this.scrollTop = st;
+                if (pane && pane.scrollTop !== pst) pane.scrollTop = pst;
+              }
+            },
+          });
+        }
+      } catch (e) { /* leave the native behaviour */ }
+      /*
+       * The editor hands text to the app 400ms after you PAUSE. Someone who
+       * types for a minute without pausing would otherwise have nothing
+       * handed over for that minute. So it is also handed over at least every
+       * three seconds of unbroken typing - memory only, no storage write.
+       */
+      var lastPull = Date.now();
+      ta.addEventListener('input', function (e) {
+        var now = Date.now();
+        lastInputAt = now;
+        if (e && e.isComposing) return;
+        if (now - lastPull > 3000) {
+          lastPull = now;
+          try { if (N.editor.isDirty()) N.editor.flushSave(); } catch (err) { /* fine */ }
+        }
+      });
+      bus.on('note:updated', function () { lastPull = Date.now(); });
+    }
+
+    var pane = document.getElementById('split-preview');
+    if (pane && !pane.__ndSteady) {
+      pane.__ndSteady = true;
+      ['wheel', 'touchstart', 'touchmove', 'keydown'].forEach(function (t) {
+        pane.addEventListener(t, markPreviewIntent, { passive: true });
+      });
+      pane.addEventListener('pointerdown', function () { previewPointer = true; markPreviewIntent(); }, { passive: true });
+      var release = function () { if (previewPointer) { previewPointer = false; markPreviewIntent(); } };
+      window.addEventListener('pointerup', release, { passive: true });
+      window.addEventListener('pointercancel', release, { passive: true });
+    }
+  }
+
+  /* ------------------------------------------------------- typing glow */
+
+  function initGlow() {
+    var ta = N.editor && N.editor.getTextarea && N.editor.getTextarea();
+    var wc = document.getElementById('word-count');
+    if (!ta || !wc || ta.__ndGlow) return;
+    ta.__ndGlow = true;
+
+    var burstStart = 0, lastAt = 0, idle = null, base = null, next = 50, lastCount = 0, popT = null;
+
+    function on() { return setting('typingGlow') !== false; }
+    function off() {
+      clearTimeout(idle);
+      wc.classList.remove('nd-flow');
+      burstStart = 0; lastAt = 0; base = null; next = 50;
+    }
+    function pop() {
+      wc.classList.remove('nd-flow-pop');
+      void wc.offsetWidth;
+      wc.classList.add('nd-flow-pop');
+      clearTimeout(popT);
+      popT = setTimeout(function () { wc.classList.remove('nd-flow-pop'); }, 1100);
+    }
+
+    ta.addEventListener('input', function () {
+      if (!on()) { if (wc.classList.contains('nd-flow')) off(); return; }
+      var now = Date.now();
+      if (!lastAt || now - lastAt > 2500) { burstStart = now; base = null; next = 50; }
+      lastAt = now;
+      if (now - burstStart > 8000 && !wc.classList.contains('nd-flow')) wc.classList.add('nd-flow');
+      if (now - lastCount > 1500) {
+        lastCount = now;
+        var w = 0;
+        try { w = U.countWords(ta.value); } catch (e) { w = 0; }
+        if (base === null) base = w;
+        if (w - base >= next && wc.classList.contains('nd-flow')) { pop(); next += 100; }
+      }
+      clearTimeout(idle);
+      idle = setTimeout(off, 3500);
+    });
+    bus.on('note:active', off);
+    bus.on('settings:changed', function () { if (!on()) off(); });
+  }
+
+  /* ------------------------------------------------------------ settings */
+
+  function settingRow(name, description, control, cls) {
+    var r = el('div.setting-row' + (cls ? '.' + cls : ''));
+    var info = el('div.setting-info');
+    info.appendChild(el('div.setting-name', null, name));
+    if (description) info.appendChild(el('div.setting-desc', null, description));
+    r.appendChild(info);
+    var c = el('div.setting-control');
+    if (control) c.appendChild(control);
+    r.appendChild(c);
+    return r;
+  }
+
+  function numberSelect(key, options, onChange) {
+    var field = el('select.field');
+    var current = String(setting(key));
+    options.forEach(function (o) {
+      field.appendChild(el('option', { value: String(o.value), selected: current === String(o.value) }, o.label));
+    });
+    field.addEventListener('change', async function () {
+      var v = Number(field.value);
+      try { await N.store.setSetting(key, v); } catch (e) { /* fine */ }
+      if (onChange) onChange(v);
+    });
+    return field;
+  }
+
+  function boolSwitch(key, onChange) {
+    var value = setting(key) === true;
+    var sw = el('div.switch' + (value ? '.is-on' : ''), { role: 'switch', tabindex: '0', 'aria-checked': String(value) });
+    var flip = async function () {
+      var next = !(setting(key) === true);
+      sw.classList.toggle('is-on', next);
+      sw.setAttribute('aria-checked', String(next));
+      try { await N.store.setSetting(key, next); } catch (e) { /* fine */ }
+      if (onChange) onChange(next);
+    };
+    sw.addEventListener('click', flip);
+    sw.addEventListener('keydown', function (e) { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); flip(); } });
+    return sw;
+  }
+
+  function statusLine() {
+    var bits = [];
+    bits.push(lastSavedAt ? 'Last saved ' + ago(lastSavedAt) : 'Nothing has needed saving yet this session');
+    if (pending.size) bits.push(pending.size === 1 ? '1 note waiting' : pending.size + ' notes waiting');
+    if (ghConnected()) {
+      var gAt = Number(N.store.state.settings.githubSyncedAt) || 0;
+      bits.push('GitHub ' + (ghDirtyCheap() ? 'has changes waiting' : 'up to date') + (gAt ? ' (last backup ' + ago(gAt) + ')' : ''));
+    }
+    return bits.join(' · ') + '.';
+  }
+
+  function injectStorageRows(block) {
+    if (block.querySelector('.nd-row-autosave')) return;
+    var wrap = el('div.settings-section.nd-row-autosave');
+    wrap.appendChild(el('h3.settings-section-title', null, 'Autosave'));
+    wrap.appendChild(el('p.settings-section-desc', null,
+      'You never need to save by hand. Nodalis groups your typing and writes it in one go, which is kinder to your device’s storage — and it always saves instantly when you switch notes, switch apps, lock your phone or close.'));
+
+    wrap.appendChild(settingRow('Save to this device',
+      'How often your typing is written to storage while you work. Only a sudden crash or power cut could cost the last few seconds. “After every pause” writes the most.',
+      numberSelect('autosaveInterval', [
+        { value: 0, label: 'After every pause' },
+        { value: 3, label: '3 seconds' },
+        { value: 5, label: '5 seconds' },
+        { value: 10, label: '10 seconds (recommended)' },
+        { value: 15, label: '15 seconds' },
+        { value: 30, label: '30 seconds' },
+        { value: 60, label: '1 minute' },
+        { value: 120, label: '2 minutes' },
+        { value: 300, label: '5 minutes' },
+      ], function () { if (pending.size) { clearTimeout(timer); timer = null; schedule(); } paintPip(); })));
+
+    wrap.appendChild(settingRow('Back up to GitHub',
+      ghConnected()
+        ? 'How often to back up while you work — only when something changed, never mid-sentence, and also when you leave the app. Off still backs up at start, on reconnect and by hand.'
+        : 'Connect a repository under GitHub sync to use this.',
+      numberSelect('githubBackupEvery', [
+        { value: 0, label: 'Off' },
+        { value: 5, label: '5 minutes' },
+        { value: 10, label: '10 minutes (recommended)' },
+        { value: 15, label: '15 minutes' },
+        { value: 30, label: '30 minutes' },
+        { value: 60, label: '1 hour' },
+      ])));
+
+    wrap.appendChild(settingRow('Ask before closing if GitHub is behind',
+      'Your notes are always safe on this device first. Turn this on if you often switch devices straight after closing.',
+      boolSwitch('warnGithubOnClose')));
+
+    var btn = el('button.btn', { type: 'button' }, 'Save and close');
+    btn.addEventListener('click', function () { saveAndClose(); });
+    var now = el('button.btn', { type: 'button', style: { marginRight: '8px' } }, 'Save now');
+    now.addEventListener('click', function () { saveNow(); });
+    var both = el('div', { style: { display: 'flex', flexWrap: 'wrap', gap: '8px', justifyContent: 'flex-end' } });
+    both.appendChild(now);
+    both.appendChild(btn);
+    var row = settingRow('Save everything now',
+      'Writes to every place your notes are kept and shows you what was saved.', both);
+    row.querySelector('.setting-info').appendChild(el('div.nd-settings-status', null, statusLine()));
+    wrap.appendChild(row);
+
+    var anchor = block.firstChild;
+    if (anchor && anchor.nextSibling) block.insertBefore(wrap, anchor.nextSibling);
+    else block.appendChild(wrap);
+  }
+
+  function injectEditorRows(block) {
+    if (block.querySelector('.nd-row-glow')) return;
+    var value = setting('typingGlow') !== false;
+    var sw = el('div.switch' + (value ? '.is-on' : ''), { role: 'switch', tabindex: '0', 'aria-checked': String(value) });
+    var flip = async function () {
+      var next = !(setting('typingGlow') !== false);
+      sw.classList.toggle('is-on', next);
+      sw.setAttribute('aria-checked', String(next));
+      try { await N.store.setSetting('typingGlow', next); } catch (e) { /* fine */ }
+    };
+    sw.addEventListener('click', flip);
+    sw.addEventListener('keydown', function (e) { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); flip(); } });
+    block.appendChild(settingRow('Typing glow',
+      'When you are writing steadily, the word count lights up softly, with a brief shimmer as the words add up.',
+      sw, 'nd-row-glow'));
+  }
+
+  function sweepSettings() {
+    var storage = document.getElementById('settings-storage');
+    if (storage) { try { injectStorageRows(storage); } catch (e) { console.warn('[nodalis] autosave settings', e); } }
+    var editor = document.getElementById('settings-editor');
+    if (editor) { try { injectEditorRows(editor); } catch (e) { console.warn('[nodalis] glow setting', e); } }
+  }
+
+  function watchSettings() {
+    var host = document.getElementById('settings-body');
+    if (!host) return;
+    sweepSettings();
+    try {
+      new MutationObserver(function () { sweepSettings(); }).observe(host, { childList: true, subtree: true });
+    } catch (e) { /* the rows still appear on first render */ }
+  }
+
+  /* --------------------------------------------------------------- start */
+
+  N.persist = {
+    enabled: isEnabled,
+    defer: defer,
+    flush: flush,
+    flushAll: saveNow,
+    pendingCount: function () { return pending.size; },
+    hasPending: function () { return pending.size > 0; },
+    intervalMs: intervalMs,
+    lastSavedAt: function () { return lastSavedAt; },
+    status: function () { return status; },
+    describeCadence: cadenceText,
+    paintPip: paintPip,
+    rescueNow: rescueNow,
+    onBeforeUnload: onBeforeUnload,
+    saveAndClose: saveAndClose,
+    saveNow: saveNow,
+    places: places,
+    githubBackup: ghBackup,
+    version: '10.9.3',
+  };
+
+  bus.on('note:active', function () {
+    /* After the editor has pulled the previous note's text into memory. */
+    setTimeout(function () { if (pending.size) flush('switch'); }, 0);
+  });
+  bus.on('settings:changed', function () { paintPip(); });
+  bus.on('vault:status', function () { paintPip(); });
+
+  bus.on('app:ready', function () {
+    restoreRescue().catch(function (e) { console.warn('[nodalis] rescue', e); });
+    try { initSteady(); } catch (e) { console.warn('[nodalis] steady typing', e); }
+    try { initGlow(); } catch (e) { console.warn('[nodalis] typing glow', e); }
+    try { watchSettings(); } catch (e) { /* cosmetic */ }
+    try {
+      N.commands.registerMany([
+        { id: 'app.saveEverything', title: 'Save everything now', group: 'App', icon: 'save',
+          run: function () { saveNow(); } },
+        { id: 'app.saveAndClose', title: 'Save and close Nodalis', group: 'App', icon: 'save',
+          run: function () { saveAndClose(); } },
+      ]);
+    } catch (e) { /* palette still works without these */ }
+    setInterval(function () { ghBackup('interval'); }, 30000);
+    /* Keep the "saved 2 min ago" wording honest without repainting often. */
+    setInterval(paintPip, 30000);
+    paintPip();
+  });
+})();
+
 </script>
 
 </body>
