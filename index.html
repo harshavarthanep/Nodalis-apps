@@ -16390,7 +16390,10 @@ https://github.com/nodeca/pako/blob/main/LICENSE
      * Every other caller - and the editor too when the interval is set to
      * "after every pause" - writes straight away, exactly as before.
      */
-    if (opts && opts.deferred && N.persist && N.persist.enabled && N.persist.enabled()) {
+    if (opts && opts.remote) {
+      /* v10.9.4: the same text, already saved by the tab that typed it. */
+      if (opts.updatedAt) note.updatedAt = opts.updatedAt;
+    } else if (opts && opts.deferred && N.persist && N.persist.enabled && N.persist.enabled()) {
       N.persist.defer(note);
     } else {
       const failuresBefore = db.writeFailures ? db.writeFailures() : 0;
@@ -18977,15 +18980,22 @@ https://github.com/nodeca/pako/blob/main/LICENSE
    * ===================================================================== */
   function build() {
     /*
-     * v10.9.3: THE LOADING SCREEN, QUIETER.
+     * v10.9.4: THE LOADING SCREEN - SIGNATURE.
      *
-     * The mark draws itself, the name appears beneath it, and one thin line
-     * fills with the app's real progress - the same honest progress the old
-     * card reported, without the card. The step names are still announced
-     * to screen readers. Nothing here waits: the app is on screen as soon as
-     * it is ready.
+     * A soft glow, the mark drawing itself, six nodes springing into place, a
+     * core that lights and sends one ripple out, the name focusing in letter
+     * by letter, and a thin line with a bright head carrying the app's REAL
+     * progress. All of it inside the time the app needs anyway: nothing here
+     * waits for an animation. Settings -> Appearance -> Loading screen can
+     * switch to the quieter Minimal style; the step names are always
+     * announced to screen readers.
      */
-    root = el('div.loader.nd-boot#loader', { role: 'status', 'aria-live': 'polite', 'aria-label': 'Loading Nodalis' });
+    let style = 'signature';
+    try { style = localStorage.getItem('nodalis.loaderStyle.v1') || 'signature'; } catch (err) { /* private mode */ }
+    root = el('div.loader.nd-boot' + (style === 'minimal' ? '.ndb-min' : '.ndb-sig') + '#loader',
+      { role: 'status', 'aria-live': 'polite', 'aria-label': 'Loading Nodalis' });
+
+    root.appendChild(el('div.ndb-glow', { 'aria-hidden': 'true' }));
 
     const stage = el('div.ndb-stage', { 'aria-hidden': 'true' });
     const svg = document.createElementNS(NS, 'svg');
@@ -19004,6 +19014,12 @@ https://github.com/nodeca/pako/blob/main/LICENSE
     d += 'M' + f(pts[0]) + 'L' + f(pts[3]);
     d += 'M' + f(pts[1]) + 'L' + f(pts[4]);
     d += 'M' + f(pts[2]) + 'L' + f(pts[5]);
+
+    const ring = document.createElementNS(NS, 'circle');
+    ring.setAttribute('class', 'ndb-ring');
+    ring.setAttribute('cx', '32'); ring.setAttribute('cy', '32'); ring.setAttribute('r', '27');
+    svg.appendChild(ring);
+
     const path = document.createElementNS(NS, 'path');
     path.setAttribute('class', 'ndb-mark-path');
     path.setAttribute('d', d);
@@ -19018,10 +19034,20 @@ https://github.com/nodeca/pako/blob/main/LICENSE
       c.style.setProperty('--i', String(i));
       svg.appendChild(c);
     });
+    const core = document.createElementNS(NS, 'circle');
+    core.setAttribute('class', 'ndb-core');
+    core.setAttribute('cx', '32'); core.setAttribute('cy', '32'); core.setAttribute('r', '3.6');
+    svg.appendChild(core);
     stage.appendChild(svg);
     root.appendChild(stage);
 
-    root.appendChild(el('div.ndb-name', { 'aria-hidden': 'true' }, 'Nodalis'));
+    const name = el('div.ndb-name', { 'aria-hidden': 'true' });
+    'Nodalis'.split('').forEach(function (ch, i) {
+      const s = el('span', null, ch);
+      s.style.setProperty('--i', String(i));
+      name.appendChild(s);
+    });
+    root.appendChild(name);
 
     meter = el('div.ndb-track', { 'aria-hidden': 'true' });
     barFill = el('span.ndb-fill');
@@ -21955,7 +21981,12 @@ https://github.com/nodeca/pako/blob/main/LICENSE
         para.push(lines[i]);
         i++;
       }
-      if (para.length) out.push('<p data-line="' + (i - para.length) + '">' + renderInline(para.join('\n'), ctx) + '</p>');
+      /* v10.9.4: a line break you typed stays a line break when read, as in
+         Obsidian and most note apps (Settings -> Editor turns it off). */
+      if (para.length) out.push('<p data-line="' + (i - para.length) + '">' + (function (html) {
+        try { if (N.store && N.store.state.settings.readLineBreaks === false) return html; } catch (err) { /* default */ }
+        return html.replace(/(?:<br\s*\/?>\s*)?\n/g, '<br>\n');
+      })(renderInline(para.join('\n'), ctx)) + '</p>');
       else i++;
     }
 
@@ -23789,6 +23820,10 @@ https://github.com/nodeca/pako/blob/main/LICENSE
   function setMode(mode) {
     const valid = ['edit', 'split', 'preview'];
     const next = valid.indexOf(mode) !== -1 ? mode : 'split';
+    /* v10.9.4: remember which line is at the top before the switch. */
+    const was = splitEl.dataset.mode;
+    let keepLine = null;
+    if (was && was !== next) { try { keepLine = topLineFor(was); } catch (err) { keepLine = null; } }
     splitEl.dataset.mode = next;
     const group = document.getElementById('editor-mode');
     if (group) {
@@ -23801,6 +23836,7 @@ https://github.com/nodeca/pako/blob/main/LICENSE
       mobileBtn.title = next === 'preview' ? 'Back to writing' : 'Read view';
     }
     if (next !== 'edit') renderPreview();
+    if (keepLine) restoreTopLine(next, keepLine);
     /*
      * v9: THIS LINE BROKE SETTINGS RESTORE FOR TWO WHOLE VERSIONS.
      *
@@ -23818,6 +23854,59 @@ https://github.com/nodeca/pako/blob/main/LICENSE
     if (N.store.state.settings.editorMode === next) return;
     N.store.state.settings.editorMode = next;
     N.store.saveSettings();
+  }
+
+  /*
+   * v10.9.4: WRITE, SPLIT AND READ SHARE ONE PLACE IN THE NOTE.
+   *
+   * Each side used to keep its own scroll position, so switching from Write
+   * at the top of a note to Read could land half-way down it. The source line
+   * at the top of whatever you were looking at is now carried across, using
+   * the same line map split-mode scrolling already relies on.
+   */
+  function topLineFor(mode) {
+    if (!ta) return null;
+    if (mode === 'preview') {
+      const pane = document.getElementById('split-preview');
+      if (!pane) return null;
+      const anchors = previewAnchors(pane);
+      if (!anchors.length) {
+        const max = pane.scrollHeight - pane.clientHeight;
+        return { ratio: max > 0 ? pane.scrollTop / max : 0 };
+      }
+      return lineAtPreviewY(anchors, pane.scrollTop);
+    }
+    if (ta.scrollTop <= 0) return { line: 0, frac: 0 };
+    return lineAtEditorY(ta.scrollTop);
+  }
+
+  function restoreTopLine(mode, at) {
+    const apply = function () {
+      if (!ta) return;
+      scrollSyncLock = Date.now() + 250;
+      const pane = document.getElementById('split-preview');
+      if (mode === 'edit' || mode === 'split') {
+        const max = ta.scrollHeight - ta.clientHeight;
+        if (max > 0) {
+          ta.scrollTop = at.ratio !== undefined ? at.ratio * max
+            : Math.max(0, Math.min(max, editorYForLine(at.line, at.frac)));
+        }
+      }
+      if ((mode === 'preview' || mode === 'split') && pane) {
+        const maxP = pane.scrollHeight - pane.clientHeight;
+        if (maxP > 0) {
+          if (at.ratio !== undefined) pane.scrollTop = at.ratio * maxP;
+          else {
+            const y = previewYForLine(previewAnchors(pane), at.line, at.frac);
+            if (y !== null) pane.scrollTop = Math.max(0, Math.min(maxP, y));
+          }
+        } else pane.scrollTop = 0;
+      }
+    };
+    apply();
+    requestAnimationFrame(apply);
+    /* Images and embeds in the preview arrive a moment later. */
+    setTimeout(apply, 180);
   }
 
   function cycleMode() {
@@ -32976,6 +33065,8 @@ https://github.com/nodeca/pako/blob/main/LICENSE
     { id: 'appearance', label: 'Appearance', icon: 'palette' },
     { id: 'typography', label: 'Typography', icon: 'type' },
     { id: 'editor', label: 'Editor', icon: 'edit' },
+    /* v10.9.4: the glow, milestones, today's words, the daily target. */
+    { id: 'motivation', label: 'Writing & motivation', icon: 'sparkle' },
     { id: 'features', label: 'Features', icon: 'layers' },
     /* v10.0: where the app's own initiative lives, all of it opt-in. */
     { id: 'automation', label: 'Automation', icon: 'zap' },
@@ -33030,39 +33121,239 @@ https://github.com/nodeca/pako/blob/main/LICENSE
    * marooned on an empty page. Every setting is reachable by scrolling, the
    * index highlights whatever you are looking at, and there is no dead space.
    */
+  /* ------------------------------------------------------------------
+   * v10.9.4: DAY-TO-DAY FIRST, THE REST BEHIND "ADVANCED".
+   *
+   * The settings you reach for every week - storage, how it looks, how it
+   * types, motivation, daily notes, GitHub - are always shown. The ones you
+   * set once (feature switches, automation, shortcuts, calendar details,
+   * backup tools) sit under Advanced, one click away, and anything that
+   * links straight to one of them opens it automatically.
+   * ---------------------------------------------------------------- */
+  const ADVANCED = { features: 1, automation: 1, shortcuts: 1, calendar: 1, data: 1 };
+  function isAdvanced(id) { return ADVANCED[id] === 1; }
+  function advancedOpen() { return N.store.state.settings.settingsShowAdvanced === true; }
+
+  async function setAdvanced(open, thenGo) {
+    N.store.state.settings.settingsShowAdvanced = !!open;
+    try { await N.store.saveSettings(); } catch (err) { /* the choice still applies this session */ }
+    render();
+    if (thenGo) requestAnimationFrame(function () { goToSection(thenGo); });
+  }
+
+  /* ------------------------------------------------------------------
+   * v10.9.4: HOLDING YOUR PLACE.
+   *
+   * Every change re-renders this page. v9.1 kept an anchor for the theme
+   * picker only; everything else restored a bare scrollTop - and then rows
+   * that other parts of the app add to sections near the top, plus a theme's
+   * web font finishing its download half a second later, moved the whole
+   * page under your finger. That is the "I change one thing and end up
+   * looking at a different setting" report.
+   *
+   * Now: remember the row you touched (or the top visible row), and keep it
+   * exactly where it was on screen while the page settles - every frame for
+   * a moment, on every size change, and when fonts finish - until you scroll
+   * yourself, which always wins.
+   * ---------------------------------------------------------------- */
+  let lastTouched = null;
+  let holdStop = null;
+
+  function keyText(n) {
+    const name = n.querySelector ? n.querySelector('.setting-name') : null;
+    return String((name || n).textContent || '').trim().slice(0, 90);
+  }
+
+  function rowOf(n) {
+    if (!n || !n.closest) return null;
+    if (n.closest('.settings-nav')) return null;          // sticky: nothing to keep
+    return n.closest('.theme-card, .setting-row, .theme-picker, .settings-section-title, .nd-adv-card, .nd-adv-divider');
+  }
+
+  function classOf(row) {
+    const list = ['theme-card', 'setting-row', 'theme-picker', 'settings-section-title', 'nd-adv-card', 'nd-adv-divider'];
+    for (let i = 0; i < list.length; i++) if (row.classList.contains(list[i])) return '.' + list[i];
+    return null;
+  }
+
+  function captureKeep() {
+    if (!body || !body.firstChild) return null;
+    const br = body.getBoundingClientRect();
+    if (br.height <= 0) return null;
+    const visible = function (n) {
+      const r = n.getBoundingClientRect();
+      return r.height > 0 && r.bottom > br.top + 4 && r.top < br.bottom - 4;
+    };
+    let row = (lastTouched && body.contains(lastTouched)) ? rowOf(lastTouched) : null;
+    if (row && !visible(row)) row = null;
+    if (!row) {
+      const cands = body.querySelectorAll('.settings-content .setting-row, .settings-content .settings-section-title, .settings-content .theme-picker');
+      for (let i = 0; i < cands.length; i++) {
+        if (visible(cands[i]) && cands[i].getBoundingClientRect().top >= br.top - 2) { row = cands[i]; break; }
+      }
+    }
+    if (!row) return null;
+    const cls = classOf(row);
+    if (!cls) return null;
+    const block = row.closest('.settings-block');
+    const text = keyText(row);
+    let nth = 0;
+    if (block) {
+      const all = block.querySelectorAll(cls);
+      for (let i = 0; i < all.length; i++) {
+        if (all[i] === row) break;
+        if (keyText(all[i]) === text) nth++;
+      }
+    }
+    return { block: block ? block.id : null, cls: cls, text: text, nth: nth, top: row.getBoundingClientRect().top };
+  }
+
+  function findKeep(k) {
+    if (k.sel) return body.querySelector(k.sel);
+    const scope = k.block ? document.getElementById(k.block) : body;
+    if (!scope) return null;
+    const all = scope.querySelectorAll(k.cls);
+    let seen = 0;
+    for (let i = 0; i < all.length; i++) {
+      if (keyText(all[i]) !== k.text) continue;
+      if (seen === k.nth) return all[i];
+      seen++;
+    }
+    return null;
+  }
+
+  function holdPlace(k) {
+    if (holdStop) holdStop();
+    let alive = true;
+    let raf = 0;
+    let expected = null;
+    const started = Date.now();
+    const settle = function () {
+      if (!alive || !body) return;
+      let n = findKeep(k);
+      let want = k.top;
+      if (!n && k.fb) { n = body.querySelector(k.fb.sel); want = k.fb.top; }
+      if (n) {
+        const delta = n.getBoundingClientRect().top - want;
+        if (Math.abs(delta) > 0.5) body.scrollTop += delta;
+      }
+      expected = body.scrollTop;
+    };
+    let ro = null;
+    const fontsDone = function () { setTimeout(settle, 30); };
+    /* Anything else that scrolls the page - a link to a section, the
+       scrollbar, the app itself - ends the hold at once. */
+    const onScroll = function () {
+      if (expected !== null && Math.abs(body.scrollTop - expected) > 2) stop();
+    };
+    const stop = function () {
+      if (!alive) return;
+      alive = false;
+      body.removeEventListener('scroll', onScroll);
+      cancelAnimationFrame(raf);
+      if (ro) { try { ro.disconnect(); } catch (err) { /* fine */ } }
+      try { if (document.fonts && document.fonts.removeEventListener) document.fonts.removeEventListener('loadingdone', fontsDone); } catch (err) { /* fine */ }
+      clearTimeout(timer);
+      if (holdStop === stop) holdStop = null;
+    };
+    const tick = function () {
+      if (!alive) return;
+      settle();
+      if (Date.now() - started < 700) raf = requestAnimationFrame(tick);
+    };
+    settle();
+    body.addEventListener('scroll', onScroll, { passive: true });
+    raf = requestAnimationFrame(tick);
+    try {
+      ro = new ResizeObserver(settle);
+      const c = body.querySelector('.settings-content');
+      if (c) ro.observe(c);
+    } catch (err) { ro = null; }
+    try { if (document.fonts && document.fonts.addEventListener) document.fonts.addEventListener('loadingdone', fontsDone); } catch (err) { /* fine */ }
+    const timer = setTimeout(stop, 3000);
+    holdStop = stop;
+  }
+
+  function stopHolding() { if (holdStop) holdStop(); }
+
+  /* Where the thing you pressed was AT THE MOMENT you pressed it. A theme
+     reflows the whole page before Settings re-renders, so measuring at
+     render time would already be measuring the moved page. */
+  let pressKeep = null;
+
+  function watchTouches() {
+    if (!body || body.__ndTouch) return;
+    body.__ndTouch = true;
+    const note = function (e) { lastTouched = e.target; };
+    ['pointerdown', 'focusin', 'change'].forEach(function (t) { body.addEventListener(t, note, true); });
+    const press = function (e) {
+      if (e.type === 'keydown' && e.key !== 'Enter' && e.key !== ' ') return;
+      lastTouched = e.target;
+      try { pressKeep = captureKeep(); if (pressKeep) pressKeep.at = Date.now(); } catch (err) { pressKeep = null; }
+    };
+    body.addEventListener('pointerdown', press, true);
+    body.addEventListener('keydown', press, true);
+    /* Your own scrolling always wins over the hold. */
+    body.addEventListener('wheel', stopHolding, { passive: true });
+    body.addEventListener('touchmove', stopHolding, { passive: true });
+    body.addEventListener('pointerdown', function (e) { if (e.target === body) stopHolding(); }, true);
+    body.addEventListener('keydown', function (e) {
+      if (/^(PageUp|PageDown|Home|End|ArrowUp|ArrowDown| )$/.test(e.key) &&
+          !(e.target && /^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName))) stopHolding();
+    }, true);
+  }
+
+  /**
+   * One scrolling document with a sticky index, rather than one short section
+   * marooned on an empty page. Every setting is reachable by scrolling, the
+   * index highlights whatever you are looking at, and there is no dead space.
+   */
   function render(opts) {
     if (!body) return;
-    /*
-     * v9.1: KEEPING THE PLACE, NOT THE SCROLL OFFSET.
-     *
-     * Restoring body.scrollTop is not the same as keeping the screen still.
-     * Changing the theme changes the UI font, so the panel's own content height
-     * changes with it - by more than a thousand pixels between Nodalis paper and
-     * Terminal. Put the same scrollTop back under different content and the card
-     * you just pressed is somewhere else, which is exactly what "the settings
-     * section is wobbling" looks like from the outside.
-     *
-     * So an ANCHOR is measured instead: where a named element sat on screen
-     * before the rebuild, and where it sits after. The difference is added to
-     * the scroll position. It is corrected again on the next two frames, and
-     * once more when the webfont has finished loading, because a font swap
-     * reflows everything a second time several hundred milliseconds later.
-     */
+    watchTouches();
+
+    /* The thing you touched is the best anchor; a caller's anchor (the theme
+       picker, the language row) is the fallback if that thing is gone. */
     const anchorSel = (opts && opts.anchor) || null;
-    const anchorTop = anchorSel ? (function () {
+    let fb = null;
+    if (anchorSel) {
       const n = body.querySelector(anchorSel);
-      return n ? n.getBoundingClientRect().top : null;
-    })() : null;
+      if (n) fb = { sel: anchorSel, top: n.getBoundingClientRect().top };
+    }
+    let keep = null;
+    if (pressKeep && Date.now() - pressKeep.at < 4000) keep = pressKeep;
+    pressKeep = null;
+    if (!keep) keep = captureKeep();
+    if (keep) keep.fb = fb;
+    else if (fb) keep = { sel: fb.sel, top: fb.top };
 
     const previousScroll = body.scrollTop;
     U.clear(body);
 
-    const layout = el('div.settings-layout');
+    const open = advancedOpen();
+    const layout = el('div.settings-layout' + (open ? '.nd-adv-open' : ''));
+    const ordered = SECTIONS.filter(function (s) { return !isAdvanced(s.id); })
+      .concat(SECTIONS.filter(function (s) { return isAdvanced(s.id); }));
 
     const nav = el('div.settings-nav');
-    SECTIONS.forEach(function (sec) {
+    let toggleDone = false;
+    ordered.forEach(function (sec) {
+      if (isAdvanced(sec.id) && !toggleDone) {
+        toggleDone = true;
+        const t = el('button.settings-nav-item.nd-adv-toggle' + (open ? '.is-open' : ''), {
+          type: 'button', 'aria-expanded': String(open),
+          title: open ? 'Hide advanced settings' : 'Show advanced settings',
+          onclick: function () { setAdvanced(!open, open ? null : 'features'); },
+        });
+        t.appendChild(N.icons.node('sliders', { size: 16 }));
+        t.appendChild(el('span', null, 'Advanced'));
+        t.appendChild(el('span.nd-adv-chev', { 'aria-hidden': 'true' }, open ? '−' : '+'));
+        nav.appendChild(t);
+      }
+      if (isAdvanced(sec.id) && !open) return;
       const secLabel = sectionLabel(sec);
-      const btn = el('button.settings-nav-item' + (sec.id === activeSection ? '.is-active' : ''), {
+      const btn = el('button.settings-nav-item' + (sec.id === activeSection ? '.is-active' : '') +
+        (isAdvanced(sec.id) ? '.nd-adv-item' : ''), {
         type: 'button',
         dataset: { label: secLabel, target: sec.id },
         onclick: function () { goToSection(sec.id); },
@@ -33074,43 +33365,91 @@ https://github.com/nodeca/pako/blob/main/LICENSE
     layout.appendChild(nav);
 
     const builders = {
-      storage: renderStorage, language: renderLanguage, appearance: renderAppearance,
+      storage: function () {
+        const box = el('div');
+        box.appendChild(renderStorage());
+        if (N.persist && N.persist.renderAutosave) {
+          try { box.appendChild(N.persist.renderAutosave()); } catch (err) { console.warn('[settings] autosave', err); }
+        }
+        return box;
+      },
+      language: renderLanguage,
+      appearance: function () {
+        const box = el('div');
+        box.appendChild(renderAppearance());
+        if (N.persist && N.persist.renderLookExtras) {
+          try { box.appendChild(N.persist.renderLookExtras()); } catch (err) { console.warn('[settings] look', err); }
+        }
+        return box;
+      },
       typography: renderTypography,
-      editor: renderEditor, features: renderFeatures, automation: renderAutomation,
+      editor: function () {
+        const box = el('div');
+        box.appendChild(renderEditor());
+        if (N.persist && N.persist.renderEditorExtras) {
+          try { box.appendChild(N.persist.renderEditorExtras()); } catch (err) { console.warn('[settings] editor', err); }
+        }
+        return box;
+      },
+      motivation: function () {
+        if (N.persist && N.persist.renderMotivation) {
+          try { return N.persist.renderMotivation(); } catch (err) { console.warn('[settings] motivation', err); }
+        }
+        return el('div');
+      },
+      features: renderFeatures, automation: renderAutomation,
       shortcuts: renderShortcuts, calendar: renderCalendar,
       daily: renderDaily, github: renderGithub, data: renderData, about: renderAbout,
     };
 
     const content = el('div.settings-content');
-    SECTIONS.forEach(function (sec) {
+    let dividerDone = false;
+    ordered.forEach(function (sec) {
       const build = builders[sec.id];
       if (!build) return;
+      if (isAdvanced(sec.id)) {
+        if (!open) return;
+        if (!dividerDone) {
+          dividerDone = true;
+          const d = el('div.nd-adv-divider');
+          d.appendChild(el('span', null, 'Advanced'));
+          d.appendChild(el('button.btn.btn-sm', { type: 'button', onclick: function () { setAdvanced(false); } }, 'Hide'));
+          content.appendChild(d);
+        }
+      }
       const block = el('div.settings-block', { id: 'settings-' + sec.id, dataset: { section: sec.id } });
-      block.appendChild(build());
+      try { block.appendChild(build()); }
+      catch (err) {
+        /* One broken section must never take the whole page with it. */
+        console.error('[settings] ' + sec.id, err);
+        block.appendChild(el('p.muted', null, 'This section could not be shown. Reload Nodalis to try again.'));
+      }
       content.appendChild(block);
     });
+    if (!open) {
+      const card = el('div.settings-block.nd-adv-card', { id: 'settings-advanced' });
+      card.appendChild(el('h3.settings-section-title', null, 'Advanced settings'));
+      card.appendChild(el('p.settings-section-desc', null,
+        SECTIONS.filter(function (s) { return isAdvanced(s.id); }).map(sectionLabel).join(' · ') +
+        '. Things you set once and rarely change.'));
+      card.appendChild(el('button.btn', { type: 'button', onclick: function () { setAdvanced(true, 'features'); } }, 'Show advanced settings'));
+      content.appendChild(card);
+    }
     layout.appendChild(content);
 
     body.appendChild(layout);
     installScrollSpy();
     body.scrollTop = previousScroll;
-
-    if (anchorSel && anchorTop !== null) {
-      const settle = function () {
-        const n = body.querySelector(anchorSel);
-        if (!n) return;
-        const delta = n.getBoundingClientRect().top - anchorTop;
-        if (Math.abs(delta) > 1) body.scrollTop += delta;
-      };
-      settle();
-      requestAnimationFrame(function () { settle(); requestAnimationFrame(settle); });
-      if (document.fonts && document.fonts.ready) {
-        document.fonts.ready.then(function () { setTimeout(settle, 30); }).catch(function () {});
-      }
-    }
+    if (keep) holdPlace(keep);
   }
 
   function goToSection(id) {
+    stopHolding();
+    if (isAdvanced(id) && !advancedOpen()) {
+      N.store.state.settings.settingsShowAdvanced = true;
+      try { N.store.saveSettings(); } catch (err) { /* fine */ }
+      render();
+    }
     activeSection = id;
     const target = document.getElementById('settings-' + id);
     if (target && body) {
@@ -33601,10 +33940,12 @@ https://github.com/nodeca/pako/blob/main/LICENSE
       if (s().themeStyle === theme.id) label.appendChild(N.icons.node('check-small', { size: 15 }));
       card.appendChild(label);
       card.addEventListener('click', async function () {
-        await N.theme.setStyle(theme.id);
-        // The picker itself is the anchor: whichever card you pressed stays
-        // under your finger while the whole app re-measures around it.
-        render({ anchor: '.theme-picker' });
+        /* v10.9.4: re-measured INSIDE the theme transition, so the page the
+           reveal uncovers is already the settled one - and the card you
+           pressed stays under your finger. */
+        let rendered = false;
+        await N.theme.setStyle(theme.id, { after: function () { rendered = true; render({ anchor: '.theme-picker' }); } });
+        if (!rendered) render({ anchor: '.theme-picker' });
       });
       picker.appendChild(card);
     });
@@ -34625,8 +34966,15 @@ https://github.com/nodeca/pako/blob/main/LICENSE
 
   function open(sectionId) {
     if (sectionId) activeSection = sectionId;
+    /* v10.9.4: a link to an Advanced section opens Advanced, and every link
+       now actually scrolls to its section instead of wherever the page was. */
+    if (sectionId && isAdvanced(sectionId) && !advancedOpen()) {
+      N.store.state.settings.settingsShowAdvanced = true;
+      try { N.store.saveSettings(); } catch (err) { /* fine */ }
+    }
     N.app.setView('settings');
     render();
+    if (sectionId) requestAnimationFrame(function () { goToSection(sectionId); });
   }
 
   function registerCommands() {
@@ -34979,6 +35327,10 @@ https://github.com/nodeca/pako/blob/main/LICENSE
         ['Obsidian compatibility', 'The on-disk format matches Obsidian: markdown at the root, app data in a `.nodalis` folder. Point Nodalis at an existing vault and it reads straight in.'],
         ['Other browsers', 'Safari and Firefox cannot write to a folder. Nodalis works fully there but stores notes in the browser, and will keep reminding you to export a `.zip` — because clearing site data would erase them.'],
         ['Backups', 'Settings → Backup exports everything as a zip: notes as `.md`, plus canvases, stickies, tasks and attachments. Importing it anywhere restores the lot.'],
+        ['Autosave', 'You never press save. Typing is grouped and written every few seconds (Settings → Storage → Autosave), and instantly whenever you switch notes, switch apps, lock your phone or close. The dot under the editor says Edited, Saving… or Saved — click it to save everywhere at once.'],
+        ['Closing safely', 'More → Save and close shows each place your notes are kept being written, then closes. If you close the tab some other way, Nodalis saves in that instant and keeps a rescue copy; anything that did not land is restored the next time you open it, and you are told.'],
+        ['GitHub backups', 'Once a repository is connected, changes are backed up on an interval you choose (Settings → Storage), never mid-sentence, and when you leave the app. Offline? It waits and catches up by itself.'],
+        ['Two tabs', 'Open the same note in two tabs and they stay in step: what you type in one appears in the other. Adding, renaming or deleting notes in one tab offers the other a reload.'],
       ],
     },
     {
@@ -55718,14 +56070,14 @@ https://github.com/nodeca/pako/blob/main/LICENSE
 
 
 <!-- =========================================================================
-     v10.9.3 - CALM SAVING, STEADY TYPING, A QUICK START
+     v10.9.3 - CALM SAVING, STEADY TYPING, MOTIVATION YOU CAN TUNE
 
-     Autosave grouped on an interval you choose, with instant saves at every
-     moment that matters and a rescue copy at close. GitHub backed up while you
-     work. A save status that tells the truth, a Save-and-close screen, a typing
-     glow, steadier typing and a quicker loading screen.
+     Autosave grouped on an interval you choose, instant saves at every moment
+     that matters, a rescue copy at close, GitHub backups while you work, tabs
+     that stay in step, a typing glow (anime or soft), today's words and a
+     daily target, a light/dark reveal and a signature loading screen.
      ========================================================================= -->
-<style id="nd-v1093-style">
+<style id="nd-v1094-style">
 /* =========================================================================
  * v10.9.3 - CALM SAVING, STEADY TYPING, A QUICK START
  * Everything below is additive. It only adds rules; nothing above is edited.
@@ -55942,8 +56294,206 @@ html[data-animations='none'] .loader.nd-boot * { animation: none !important; }
 /* settings rows added by this block */
 .nd-settings-status { font-size: 12.5px; color: var(--text-3); margin-top: 4px; }
 
+/* =========================================================================
+ * v10.9.4
+ * ========================================================================= */
+
+/* ---- database: the same breathing room as every other view ------------- */
+.db-scroll:has(> .db-table) { padding: var(--sp-5) var(--sp-6) var(--sp-7); }
+.db-scroll > .db-table {
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--bg-0);
+}
+.db-scroll > .db-table thead th:first-child { border-top-left-radius: 13px; }
+.db-scroll > .db-table thead th:last-child { border-top-right-radius: 13px; }
+.db-scroll > .db-table tbody tr:last-child td { border-bottom: 0; }
+.db-scroll > .db-table tbody tr:last-child td:first-child { border-bottom-left-radius: 13px; }
+.db-scroll > .db-table tbody tr:last-child td:last-child { border-bottom-right-radius: 13px; }
+@media (max-width: 760px) {
+  .db-scroll:has(> .db-table) { padding: var(--sp-3) var(--sp-3) var(--sp-5); }
+}
+
+/* ---- the typing glow, anime style ------------------------------------- */
+#word-count.nd-flow.nd-anime {
+  color: #fff;
+  background: linear-gradient(110deg, var(--accent), #ff5fa2, #b388ff, #5ce1e6, var(--accent));
+  background-size: 300% 100%;
+  animation: nd-aurora 3.2s linear infinite;
+  box-shadow: 0 0 0 1px color-mix(in srgb, #fff 30%, transparent),
+              0 0 18px color-mix(in srgb, #ff5fa2 45%, transparent),
+              0 0 32px color-mix(in srgb, var(--accent) 35%, transparent);
+  text-shadow: 0 1px 0 rgba(0, 0, 0, .25);
+  font-weight: 600;
+}
+@keyframes nd-aurora { to { background-position: 300% 0; } }
+
+.nd-fx { position: fixed; inset: 0; pointer-events: none; z-index: 2147482000; overflow: hidden; contain: strict; }
+.nd-burst { position: absolute; width: 0; height: 0; }
+.nd-spark {
+  position: absolute; left: -7px; top: -7px; width: 14px; height: 14px;
+  background: var(--c);
+  clip-path: polygon(50% 0, 61% 39%, 100% 50%, 61% 61%, 50% 100%, 39% 61%, 0 50%, 39% 39%);
+  filter: drop-shadow(0 0 4px var(--c));
+  transform: translate(0, 0) scale(0) rotate(0);
+  animation: nd-spark 900ms cubic-bezier(.15, .8, .3, 1) var(--d, 0ms) forwards;
+}
+@keyframes nd-spark {
+  0%   { transform: translate(0, 0) scale(0) rotate(0); opacity: 1; }
+  35%  { transform: translate(calc(var(--dx) * .7), calc(var(--dy) * .7)) scale(var(--s)) rotate(calc(var(--rot) * .6)); opacity: 1; }
+  100% { transform: translate(var(--dx), calc(var(--dy) + 14px)) scale(0) rotate(var(--rot)); opacity: 0; }
+}
+.nd-ray {
+  position: absolute; left: 0; top: -1px; width: 46px; height: 2px; border-radius: 2px;
+  background: linear-gradient(90deg, transparent, var(--c));
+  transform-origin: 0 50%;
+  transform: rotate(var(--a)) translateX(14px) scaleX(0);
+  animation: nd-ray 460ms cubic-bezier(.2, .8, .2, 1) forwards;
+  opacity: .9;
+}
+@keyframes nd-ray {
+  0%   { transform: rotate(var(--a)) translateX(10px) scaleX(0); opacity: 1; }
+  60%  { transform: rotate(var(--a)) translateX(26px) scaleX(1); opacity: .9; }
+  100% { transform: rotate(var(--a)) translateX(54px) scaleX(.2); opacity: 0; }
+}
+.nd-pop {
+  position: absolute; left: 0; top: -40px; white-space: nowrap;
+  font: italic 900 20px/1 var(--font-display, var(--font-ui, system-ui));
+  letter-spacing: .02em;
+  color: #fff;
+  -webkit-text-stroke: 1px rgba(0, 0, 0, .25);
+  text-shadow: 0 0 10px #ff5fa2, 0 0 18px var(--accent), 2px 2px 0 #ffd166;
+  transform: translate(-50%, 0) scale(.2) rotate(-8deg);
+  animation: nd-pop 1150ms cubic-bezier(.2, 1.4, .3, 1) forwards;
+}
+.nd-pop.is-big { font-size: 34px; }
+@keyframes nd-pop {
+  0%   { transform: translate(-50%, 0) scale(.2) rotate(-14deg); opacity: 0; }
+  25%  { transform: translate(-50%, -34px) scale(1.15) rotate(-6deg); opacity: 1; }
+  45%  { transform: translate(-50%, -30px) scale(.95) rotate(-4deg); }
+  75%  { transform: translate(-50%, -40px) scale(1) rotate(-4deg); opacity: 1; }
+  100% { transform: translate(-50%, -62px) scale(.9) rotate(-2deg); opacity: 0; }
+}
+.nd-combo {
+  position: absolute; transform: translate(-50%, -100%) scale(.6); opacity: 0;
+  display: inline-flex; align-items: baseline; gap: 5px;
+  padding: 3px 9px 3px 8px; border-radius: 6px;
+  font: italic 900 11px/1.2 var(--font-display, var(--font-ui, system-ui));
+  letter-spacing: .12em; color: #fff;
+  background: linear-gradient(100deg, #ff5fa2, var(--accent) 60%, #5ce1e6);
+  box-shadow: 0 4px 14px -4px color-mix(in srgb, #ff5fa2 70%, transparent), 0 0 0 1px rgba(255, 255, 255, .35) inset;
+  transition: opacity 220ms ease, transform 260ms cubic-bezier(.2, 1.4, .3, 1);
+  white-space: nowrap;
+}
+.nd-combo.is-on { opacity: 1; transform: translate(-50%, -100%) scale(1) skewX(-8deg); }
+.nd-combo.is-bump { animation: nd-combo-bump 420ms cubic-bezier(.2, 1.6, .3, 1); }
+.nd-combo-x { font-size: 13px; color: #ffe066; text-shadow: 0 0 6px rgba(255, 224, 102, .8); }
+@keyframes nd-combo-bump {
+  0% { transform: translate(-50%, -100%) scale(1.45) skewX(-8deg); }
+  100% { transform: translate(-50%, -100%) scale(1) skewX(-8deg); }
+}
+
+/* ---- words added today ------------------------------------------------- */
+.nd-today {
+  display: inline-flex; align-items: center; gap: 5px;
+  margin-left: 12px; padding: 2px 8px; border-radius: 999px;
+  border: 0; background: transparent; color: var(--text-3);
+  font: inherit; font-size: inherit; font-variant-numeric: tabular-nums;
+  cursor: pointer; white-space: nowrap;
+  transition: background-color 160ms ease, color 160ms ease;
+}
+.nd-today:hover { background: color-mix(in srgb, var(--text-0) 6%, transparent); color: var(--text-1); }
+.nd-today.is-hit { color: #16a34a; }
+.nd-today-ring { width: 13px; height: 13px; transform: rotate(-90deg); flex: none; }
+.nd-today-track { fill: none; stroke: color-mix(in srgb, var(--text-0) 14%, transparent); stroke-width: 2.4; }
+.nd-today-fill { fill: none; stroke: var(--accent); stroke-width: 2.4; stroke-linecap: round; stroke-dasharray: 100; transition: stroke-dashoffset 500ms ease; }
+.nd-today.is-hit .nd-today-fill { stroke: #16a34a; }
+
+/* ---- light and dark --------------------------------------------------- */
+html.nd-vt::view-transition-old(root),
+html.nd-vt::view-transition-new(root) { animation: none; mix-blend-mode: normal; }
+html.nd-vt::view-transition-old(root) { z-index: 1; }
+html.nd-vt::view-transition-new(root) { z-index: 2; }
+html.nd-theme-fade, html.nd-theme-fade *, html.nd-theme-fade *::before, html.nd-theme-fade *::after {
+  transition: background-color 380ms ease, color 380ms ease, border-color 380ms ease, fill 380ms ease, stroke 380ms ease, box-shadow 380ms ease !important;
+}
+
+/* ---- settings: advanced, and a calm pair of buttons --------------------- */
+.nd-adv-toggle { margin-top: 10px; border-top: 1px solid var(--border); padding-top: 10px; color: var(--text-2); }
+.nd-adv-chev { margin-left: auto; font-weight: 600; color: var(--text-3); }
+.nd-adv-item { opacity: .92; }
+.nd-adv-divider {
+  display: flex; align-items: center; gap: 12px; margin: 28px 0 8px;
+  font-size: 12px; font-weight: 650; letter-spacing: .08em; text-transform: uppercase; color: var(--text-3);
+}
+.nd-adv-divider::after { content: ''; flex: 1; height: 1px; background: var(--border); order: 1; }
+.nd-adv-divider .btn { order: 2; }
+.nd-adv-card { border: 1px dashed var(--border); border-radius: 14px; padding: 18px 20px; margin-top: 18px; }
+.nd-btn-pair { display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end; }
+@media (max-width: 760px) {
+  .nd-adv-toggle { margin-top: 0; border-top: 0; padding-top: 0; }
+}
+
+/* ---- the loading screen, signature style --------------------------------- */
+.loader.nd-boot .ndb-glow { display: none; }
+.loader.nd-boot.ndb-sig .ndb-glow {
+  display: block; position: absolute; left: 50%; top: 50%;
+  width: 340px; height: 340px; margin: -230px 0 0 -170px; border-radius: 50%;
+  background: radial-gradient(closest-side, color-mix(in srgb, var(--accent) 26%, transparent), transparent 70%);
+  filter: blur(8px); opacity: 0;
+  animation: ndb-glow-in 900ms ease-out forwards, ndb-breathe 2.6s ease-in-out 900ms infinite;
+  pointer-events: none;
+}
+@keyframes ndb-glow-in { to { opacity: 1; } }
+@keyframes ndb-breathe { 0%, 100% { transform: scale(1); opacity: 1; } 50% { transform: scale(1.08); opacity: .8; } }
+.loader.nd-boot .ndb-stage { position: relative; }
+.loader.nd-boot .ndb-ring { fill: none; stroke: var(--accent); stroke-width: 1.2; opacity: 0; transform-box: fill-box; transform-origin: center; }
+.loader.nd-boot.ndb-sig .ndb-ring { animation: ndb-ripple 900ms cubic-bezier(.2, .8, .2, 1) 560ms forwards; }
+@keyframes ndb-ripple { 0% { opacity: .9; transform: scale(.55); } 100% { opacity: 0; transform: scale(1.55); } }
+.loader.nd-boot .ndb-core { fill: var(--accent); opacity: 0; transform-box: fill-box; transform-origin: center; }
+.loader.nd-boot.ndb-sig .ndb-core { animation: ndb-core 420ms cubic-bezier(.2, 1.5, .3, 1) 500ms forwards; filter: drop-shadow(0 0 4px var(--accent)); }
+.loader.nd-boot.ndb-min .ndb-core { opacity: 1; }
+@keyframes ndb-core { from { opacity: 0; transform: scale(0); } to { opacity: 1; transform: scale(1); } }
+.loader.nd-boot.ndb-sig .ndb-node { animation-timing-function: cubic-bezier(.2, 1.6, .3, 1); }
+.loader.nd-boot .ndb-name { display: flex; justify-content: center; }
+.loader.nd-boot .ndb-name span { display: inline-block; }
+.loader.nd-boot.ndb-sig .ndb-name { opacity: 1; animation: none; }
+.loader.nd-boot.ndb-sig .ndb-name span {
+  opacity: 0; transform: translateY(8px); filter: blur(6px);
+  animation: ndb-letter 520ms cubic-bezier(.2, .8, .2, 1) forwards;
+  animation-delay: calc(140ms + var(--i, 0) * 38ms);
+}
+@keyframes ndb-letter { to { opacity: 1; transform: none; filter: blur(0); } }
+.loader.nd-boot.ndb-sig .ndb-fill { position: relative; box-shadow: 0 0 10px color-mix(in srgb, var(--accent) 60%, transparent); }
+.loader.nd-boot.ndb-sig .ndb-track { overflow: visible; }
+.loader.nd-boot.ndb-sig .ndb-fill::after {
+  content: ''; position: absolute; right: -2px; top: 50%; width: 7px; height: 7px; margin-top: -3.5px; border-radius: 50%;
+  background: #fff; box-shadow: 0 0 8px 2px var(--accent);
+}
+.loader.nd-boot.ndb-sig.is-done .ndb-stage { animation: ndb-lift 320ms cubic-bezier(.4, 0, .2, 1) forwards; }
+@keyframes ndb-lift { to { transform: scale(1.12); opacity: 0; } }
+
+/* everything above steps aside for reduced motion */
+[data-animations='none'] .nd-fx, [data-animations='none'] .nd-combo { display: none !important; }
+[data-animations='none'] #word-count.nd-flow.nd-anime { animation: none; }
+[data-animations='none'] .loader.nd-boot .ndb-name span { opacity: 1; transform: none; filter: none; }
+@media (prefers-reduced-motion: reduce) {
+  .nd-fx, .nd-combo { display: none !important; }
+  #word-count.nd-flow.nd-anime { animation: none; }
+  .loader.nd-boot .ndb-name span { opacity: 1 !important; transform: none !important; filter: none !important; }
+  .loader.nd-boot .ndb-core { opacity: 1; }
+  .loader.nd-boot .ndb-glow { animation: none !important; opacity: .7; }
+}
+
+/* the hold above is the one authority over this panel's scroll position */
+#settings-body { overflow-anchor: none; }
+/* .view-body scrolls smoothly, which turned every "put the page back where it
+   was" after a settings change into a visible glide from the top. Links to a
+   section still glide - they ask for it explicitly. */
+#settings-body { scroll-behavior: auto !important; }
+
 </style>
-<script id="nd-v1093-script">
+<script id="nd-v1094-script">
 (function () {
   'use strict';
 
@@ -56289,14 +56839,26 @@ html[data-animations='none'] .loader.nd-boot * { animation: none !important; }
       if (Date.now() - lastInputAt < 15000) return 'skipped';
     }
     ghLastTry = Date.now();
-    try {
-      if (pending.size) await flush('github');
-      if (!ghHasPending()) return 'uptodate';
-      await N.github.push({ silent: true, auto: true, quiet: true });
-      return ghHasPending() ? 'failed' : 'ok';
-    } catch (e) {
-      return online() ? 'failed' : 'offline';
+    var work = async function () {
+      try {
+        if (pending.size) await flush('github');
+        if (!ghHasPending()) return 'uptodate';
+        await N.github.push({ silent: true, auto: true, quiet: true });
+        return ghHasPending() ? 'failed' : 'ok';
+      } catch (e) {
+        return online() ? 'failed' : 'offline';
+      }
+    };
+    /* v10.9.4: with Nodalis open in two tabs, only one of them backs up at a
+       time - two pushes racing each other is how commits get rejected. */
+    if (reason !== 'manual' && navigator.locks && navigator.locks.request) {
+      try {
+        return await navigator.locks.request('nodalis-github-backup', { ifAvailable: true }, function (lock) {
+          return lock ? work() : 'busy';
+        });
+      } catch (e) { /* fall through */ }
     }
+    return work();
   }
 
   /* --------------------------------------------------------- where it is */
@@ -56862,7 +57424,134 @@ html[data-animations='none'] .loader.nd-boot * { animation: none !important; }
     }
   }
 
-  /* ------------------------------------------------------- typing glow */
+  /* =======================================================================
+   * v10.9.4 - WRITING & MOTIVATION
+   *
+   * Everything here is optional and lives in Settings -> Writing & motivation:
+   *   * a glow on the word count once you are writing steadily - "Anime"
+   *     (sparkles, speed lines, a combo badge, a pop at each milestone),
+   *     "Soft" (a calm tint and shimmer) or Off;
+   *   * a "+N today" counter of the words you added today, across notes;
+   *   * an optional daily target, celebrated once when you reach it.
+   * Effects are drawn on their own fixed layer, so nothing in the editor
+   * ever moves because of them, and they step aside for reduced motion.
+   * ===================================================================== */
+
+  var MOTIVATION_DEFAULTS = {
+    glowStyle: 'anime',        // anime | soft | off
+    flowAfter: 8,              // seconds of steady typing before the glow
+    milestoneEvery: 50,        // words
+    comboBadge: true,
+    todayCounter: true,
+    dailyTarget: 0,            // words; 0 = no target
+    themeTransition: 'reveal', // reveal | fade | off
+    loaderStyle: 'signature',  // signature | minimal
+    readLineBreaks: true,
+  };
+
+  function pref(key) {
+    var fb = MOTIVATION_DEFAULTS[key];
+    try {
+      var v = N.store.getSetting(key, undefined);
+      if (key === 'glowStyle' && v === undefined && N.store.getSetting('typingGlow', true) === false) return 'off';
+      return (v === undefined || v === null || v === '') ? fb : v;
+    } catch (e) { return fb; }
+  }
+
+  function targetWords() {
+    var n = Math.round(Number(pref('dailyTarget')));
+    return isFinite(n) && n > 0 ? Math.min(n, 1000000) : 0;
+  }
+
+  function quietMotion() {
+    try {
+      if (window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches) return true;
+      return N.store.state.settings.animations === 'none';
+    } catch (e) { return false; }
+  }
+
+  /* ----------------------------------------------------------- the fx layer */
+
+  var fxLayer = null;
+  function layer() {
+    if (fxLayer && fxLayer.parentNode) return fxLayer;
+    fxLayer = el('div.nd-fx', { 'aria-hidden': 'true' });
+    document.body.appendChild(fxLayer);
+    return fxLayer;
+  }
+
+  var PALETTE = ['var(--accent)', '#ff5fa2', '#ffd166', '#5ce1e6', '#b388ff', '#7cf29c'];
+
+  /** A burst of sparkles and speed lines from the centre of a rectangle. */
+  function burst(rect, opts) {
+    if (!rect || quietMotion()) return;
+    var o = opts || {};
+    var L = layer();
+    var cx = rect.left + rect.width / 2;
+    var cy = rect.top + rect.height / 2;
+    var host = el('div.nd-burst', { style: { left: cx + 'px', top: cy + 'px' } });
+    var sparks = o.big ? 22 : 12;
+    for (var i = 0; i < sparks; i++) {
+      var a = (Math.PI * 2 * i) / sparks + (Math.random() - 0.5) * 0.6;
+      var dist = (o.big ? 70 : 38) + Math.random() * (o.big ? 90 : 46);
+      var sp = el('i.nd-spark');
+      sp.style.setProperty('--dx', (Math.cos(a) * dist).toFixed(1) + 'px');
+      sp.style.setProperty('--dy', (Math.sin(a) * dist - (o.big ? 20 : 10)).toFixed(1) + 'px');
+      sp.style.setProperty('--rot', Math.round((Math.random() - 0.5) * 540) + 'deg');
+      sp.style.setProperty('--s', (0.6 + Math.random() * (o.big ? 1.1 : 0.7)).toFixed(2));
+      sp.style.setProperty('--c', PALETTE[i % PALETTE.length]);
+      sp.style.setProperty('--d', Math.round(Math.random() * 90) + 'ms');
+      host.appendChild(sp);
+    }
+    var rays = o.big ? 16 : 10;
+    for (var r = 0; r < rays; r++) {
+      var ray = el('i.nd-ray');
+      ray.style.setProperty('--a', Math.round((360 / rays) * r + Math.random() * 10) + 'deg');
+      ray.style.setProperty('--c', PALETTE[(r + 2) % PALETTE.length]);
+      host.appendChild(ray);
+    }
+    if (o.text) {
+      var pop = el('b.nd-pop' + (o.big ? '.is-big' : ''), null, o.text);
+      host.appendChild(pop);
+    }
+    L.appendChild(host);
+    setTimeout(function () { if (host.parentNode) host.parentNode.removeChild(host); }, o.big ? 1700 : 1300);
+  }
+
+  /* ------------------------------------------------------- the typing glow */
+
+  var combo = null;
+  var comboLevel = 0;
+
+  function comboEl() {
+    if (combo && combo.parentNode) return combo;
+    combo = el('div.nd-combo');
+    layer().appendChild(combo);
+    return combo;
+  }
+
+  function placeCombo(wc) {
+    if (!combo || !wc) return;
+    var r = wc.getBoundingClientRect();
+    combo.style.left = (r.left + r.width / 2) + 'px';
+    combo.style.top = (r.top - 8) + 'px';
+  }
+
+  var LEVELS = ['FLOW', 'FLOW', 'ON FIRE', 'IN THE ZONE', 'UNSTOPPABLE', 'LEGENDARY'];
+
+  function showCombo(wc, level) {
+    if (pref('glowStyle') !== 'anime' || pref('comboBadge') === false || quietMotion()) { hideCombo(); return; }
+    var c = comboEl();
+    c.textContent = '';
+    c.appendChild(el('span.nd-combo-label', null, LEVELS[Math.min(level, LEVELS.length - 1)]));
+    if (level > 1) c.appendChild(el('span.nd-combo-x', null, '×' + level));
+    placeCombo(wc);
+    c.classList.remove('is-bump');
+    void c.offsetWidth;
+    c.classList.add('is-on', 'is-bump');
+  }
+
+  function hideCombo() { if (combo) combo.classList.remove('is-on', 'is-bump'); }
 
   function initGlow() {
     var ta = N.editor && N.editor.getTextarea && N.editor.getTextarea();
@@ -56872,38 +57561,380 @@ html[data-animations='none'] .loader.nd-boot * { animation: none !important; }
 
     var burstStart = 0, lastAt = 0, idle = null, base = null, next = 50, lastCount = 0, popT = null;
 
-    function on() { return setting('typingGlow') !== false; }
+    function style() { return pref('glowStyle'); }
     function off() {
       clearTimeout(idle);
-      wc.classList.remove('nd-flow');
-      burstStart = 0; lastAt = 0; base = null; next = 50;
+      wc.classList.remove('nd-flow', 'nd-anime');
+      hideCombo();
+      comboLevel = 0;
+      burstStart = 0; lastAt = 0; base = null;
     }
-    function pop() {
+    function shimmer() {
       wc.classList.remove('nd-flow-pop');
       void wc.offsetWidth;
       wc.classList.add('nd-flow-pop');
       clearTimeout(popT);
       popT = setTimeout(function () { wc.classList.remove('nd-flow-pop'); }, 1100);
     }
+    function milestone(words) {
+      shimmer();
+      if (style() === 'anime') {
+        comboLevel++;
+        showCombo(wc, comboLevel + 1);
+        burst(wc.getBoundingClientRect(), { text: '+' + words + '!' });
+      }
+      try { if (N.haptics && N.haptics.buzz) N.haptics.buzz('tick'); } catch (e) { /* fine */ }
+    }
 
     ta.addEventListener('input', function () {
-      if (!on()) { if (wc.classList.contains('nd-flow')) off(); return; }
+      var st = style();
+      if (st === 'off') { if (wc.classList.contains('nd-flow')) off(); return; }
       var now = Date.now();
-      if (!lastAt || now - lastAt > 2500) { burstStart = now; base = null; next = 50; }
+      var every = Math.max(10, Number(pref('milestoneEvery')) || 50);
+      if (!lastAt || now - lastAt > 2500) { burstStart = now; base = null; next = every; comboLevel = 0; }
       lastAt = now;
-      if (now - burstStart > 8000 && !wc.classList.contains('nd-flow')) wc.classList.add('nd-flow');
-      if (now - lastCount > 1500) {
+      var after = Math.max(2, Number(pref('flowAfter')) || 8) * 1000;
+      if (now - burstStart > after && !wc.classList.contains('nd-flow')) {
+        wc.classList.add('nd-flow');
+        if (st === 'anime') { wc.classList.add('nd-anime'); showCombo(wc, 1); }
+      }
+      if (now - lastCount > 1200) {
         lastCount = now;
         var w = 0;
         try { w = U.countWords(ta.value); } catch (e) { w = 0; }
         if (base === null) base = w;
-        if (w - base >= next && wc.classList.contains('nd-flow')) { pop(); next += 100; }
+        if (w - base >= next && wc.classList.contains('nd-flow')) { milestone(next); next += every; }
       }
       clearTimeout(idle);
       idle = setTimeout(off, 3500);
     });
+    window.addEventListener('resize', function () { placeCombo(wc); }, { passive: true });
     bus.on('note:active', off);
-    bus.on('settings:changed', function () { if (!on()) off(); });
+    bus.on('view:changed', off);
+    bus.on('settings:changed', function () { if (style() === 'off') off(); });
+  }
+
+  /* ------------------------------------------------- typewriter, from line 1 */
+
+  /*
+   * Typewriter scrolling kept the caret at a fixed height - except near the
+   * top of a note, where there was nothing above the first lines to scroll
+   * away, so they sat at the top of the screen. That is the "it doesn't
+   * work" moment. Room above the text, sized to the chosen height, lets the
+   * very first line sit where every other line does (as iA Writer does).
+   */
+  function paintTypewriterPad() {
+    var ta = N.editor && N.editor.getTextarea && N.editor.getTextarea();
+    if (!ta) return;
+    var on = false;
+    try { on = N.store.state.settings.typewriter === true; } catch (e) { on = false; }
+    if (!on) { if (ta.style.paddingTop) ta.style.paddingTop = ''; return; }
+    var where = (N.store.state.settings.typewriterAnchor || 'middle');
+    var frac = where === 'top' ? 0.28 : (where === 'low' ? 0.62 : 0.44);
+    var h = ta.clientHeight || Math.round(window.innerHeight * 0.7);
+    if (h < 120) return;
+    var lh = parseFloat(getComputedStyle(ta).lineHeight) || 24;
+    var pad = Math.max(24, Math.round(h * frac - lh / 2));
+    var want = pad + 'px';
+    if (ta.style.paddingTop !== want) {
+      var st = ta.scrollTop;
+      var before = parseFloat(getComputedStyle(ta).paddingTop) || 0;
+      ta.style.paddingTop = want;
+      ta.scrollTop = Math.max(0, st + (pad - before));
+    }
+  }
+
+  function initTypewriter() {
+    paintTypewriterPad();
+    bus.on('settings:changed', function () { requestAnimationFrame(paintTypewriterPad); });
+    bus.on('note:active', function () { requestAnimationFrame(paintTypewriterPad); });
+    window.addEventListener('resize', U.debounce ? U.debounce(paintTypewriterPad, 150) : paintTypewriterPad, { passive: true });
+  }
+
+  /* -------------------------------------------------------- today's words */
+
+  var TODAY_KEY = 'nodalis.today.v1';
+  var today = { d: '', w: 0, hit: false };
+  var todayDirty = false;
+  var lastWords = new Map();
+  var applyingRemote = false;
+
+  function dayKey() {
+    try { return U.todayKey(); } catch (e) {
+      var d = new Date();
+      return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+    }
+  }
+
+  function loadToday() {
+    try {
+      var raw = JSON.parse(localStorage.getItem(TODAY_KEY) || 'null');
+      if (raw && raw.d === dayKey()) today = { d: raw.d, w: Math.max(0, Number(raw.w) || 0), hit: !!raw.hit };
+      else today = { d: dayKey(), w: 0, hit: false };
+    } catch (e) { today = { d: dayKey(), w: 0, hit: false }; }
+  }
+
+  /** Written on the same beat as the notes, never per keystroke. */
+  function saveToday() {
+    if (!todayDirty) return;
+    todayDirty = false;
+    try { localStorage.setItem(TODAY_KEY, JSON.stringify(today)); } catch (e) { /* private mode */ }
+  }
+
+  function rollDay() {
+    var k = dayKey();
+    if (today.d !== k) { today = { d: k, w: 0, hit: false }; todayDirty = true; }
+  }
+
+  function addToday(n) {
+    rollDay();
+    today.w += n;
+    todayDirty = true;
+    var target = targetWords();
+    if (target > 0 && !today.hit && today.w >= target) {
+      today.hit = true;
+      saveToday();
+      celebrateTarget(target);
+    }
+    paintToday();
+  }
+
+  function celebrateTarget(target) {
+    var chip = document.getElementById('nd-today');
+    var wc = document.getElementById('word-count');
+    var r = (chip || wc) ? (chip || wc).getBoundingClientRect() : { left: innerWidth / 2, top: innerHeight / 2, width: 0, height: 0 };
+    if (pref('glowStyle') !== 'off') burst(r, { big: true, text: 'GOAL!' });
+    try { if (N.fx && N.fx.lightwork && !quietMotion()) N.fx.lightwork(document.body, { intensity: 1 }); } catch (e) { /* fine */ }
+    try {
+      N.toast.success(target + ' words today — your daily target is done. Lovely work.',
+        { ms: 6000, title: 'Daily target reached', key: 'nd-target' });
+    } catch (e) { /* fine */ }
+  }
+
+  function ring(pct) {
+    var s = svg('svg', { viewBox: '0 0 16 16', class: 'nd-today-ring', 'aria-hidden': 'true' });
+    s.appendChild(svg('circle', { cx: '8', cy: '8', r: '6', class: 'nd-today-track' }));
+    var f = svg('circle', { cx: '8', cy: '8', r: '6', class: 'nd-today-fill', pathLength: '100' });
+    f.style.strokeDashoffset = String(100 - Math.max(0, Math.min(100, pct)));
+    s.appendChild(f);
+    return s;
+  }
+
+  function paintToday() {
+    var foot = document.querySelector('.editor-foot');
+    var wc = document.getElementById('word-count');
+    var chip = document.getElementById('nd-today');
+    if (pref('todayCounter') === false) { if (chip) chip.remove(); return; }
+    if (!foot || !wc) return;
+    if (!chip) {
+      chip = el('button.nd-today#nd-today', { type: 'button' });
+      chip.addEventListener('click', function () { try { N.settings.open('motivation'); } catch (e) { /* fine */ } });
+      wc.parentNode.insertBefore(chip, wc.nextSibling);
+    }
+    rollDay();
+    var target = targetWords();
+    U.clear(chip);
+    if (target > 0) chip.appendChild(ring((today.w / target) * 100));
+    chip.appendChild(el('span', null, '+' + today.w.toLocaleString() + ' today'));
+    chip.classList.toggle('is-hit', !!today.hit);
+    chip.title = target > 0
+      ? today.w.toLocaleString() + ' of ' + target.toLocaleString() + ' words today' + (today.hit ? ' — target reached!' : '') + '. Click to change.'
+      : 'Words you have added today, across all notes. Click to set a daily target.';
+  }
+
+  function initToday() {
+    loadToday();
+    paintToday();
+    var activeId = function () {
+      try { return N.editor.currentNoteId(); } catch (e) { return null; }
+    };
+    var remember = function (note) {
+      if (!note) return;
+      try { lastWords.set(note.id, U.countWords(note.content || '')); } catch (e) { /* fine */ }
+    };
+    bus.on('note:active', function () {
+      setTimeout(function () {
+        var id = activeId();
+        var n = id && N.store.state.notes.get(id);
+        if (n) remember(n);
+      }, 0);
+    });
+    var cur = activeId() && N.store.state.notes.get(activeId());
+    if (cur) remember(cur);
+    bus.on('note:updated', function (note) {
+      if (!note || !note.id) return;
+      /* Only typing counts: not a pull, a restore, another tab or an import. */
+      if (applyingRemote || note.id !== activeId() || Date.now() - lastInputAt > 6000) { remember(note); return; }
+      var w;
+      try { w = U.countWords(note.content || ''); } catch (e) { return; }
+      var prev = lastWords.get(note.id);
+      lastWords.set(note.id, w);
+      if (prev === undefined) return;
+      var d = w - prev;
+      if (d > 0 && d < 5000) addToday(d);
+    });
+    bus.on('persist:flushed', saveToday);
+    document.addEventListener('visibilitychange', function () { if (document.visibilityState === 'hidden') saveToday(); });
+    window.addEventListener('pagehide', saveToday);
+    bus.on('settings:changed', paintToday);
+    /* Midnight passes while the app is open. */
+    setInterval(function () { var k = dayKey(); if (today.d !== k) { rollDay(); saveToday(); paintToday(); } }, 60000);
+  }
+
+  /* ------------------------------------------------- light and dark, kindly */
+
+  var lastPointer = null;
+  document.addEventListener('pointerdown', function (e) {
+    lastPointer = { x: e.clientX, y: e.clientY, t: Date.now() };
+  }, true);
+
+  function themeOrigin() {
+    if (lastPointer && Date.now() - lastPointer.t < 1500) return lastPointer;
+    var b = document.getElementById('btn-theme');
+    if (b) {
+      var r = b.getBoundingClientRect();
+      if (r.width) return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+    }
+    return { x: window.innerWidth - 60, y: 30 };
+  }
+
+  var themeBusy = false;
+  var fadeTimer = null;
+
+  function withThemeTransition(fn) {
+    return function () {
+      var self = this, args = Array.prototype.slice.call(arguments);
+      /* A caller can pass { after } to have its own re-render happen inside
+         the transition, so the reveal uncovers the finished page. */
+      var last = args[args.length - 1];
+      var after = (last && typeof last === 'object' && typeof last.after === 'function') ? last.after : null;
+      if (after) args.pop();
+      var runAfter = function (r) { if (after) { try { after(); } catch (e) { console.warn('[nodalis] after theme change', e); } } return r; };
+      var plain = function () { return Promise.resolve(fn.apply(self, args)).then(runAfter); };
+      var mode = pref('themeTransition');
+      if (mode === 'off' || quietMotion() || themeBusy) return plain();
+      var root = document.documentElement;
+      if (mode === 'reveal' && typeof document.startViewTransition === 'function') {
+        themeBusy = true;
+        var o = themeOrigin();
+        var R = Math.hypot(Math.max(o.x, window.innerWidth - o.x), Math.max(o.y, window.innerHeight - o.y));
+        var result;
+        var vt;
+        root.classList.add('nd-vt');
+        try {
+          vt = document.startViewTransition(function () {
+            result = Promise.resolve(fn.apply(self, args)).then(runAfter);
+            return result.catch(function () { /* surfaced by the caller */ });
+          });
+        } catch (e) {
+          themeBusy = false;
+          root.classList.remove('nd-vt');
+          return plain();
+        }
+        vt.ready.then(function () {
+          root.animate({
+            clipPath: ['circle(0px at ' + o.x + 'px ' + o.y + 'px)', 'circle(' + Math.ceil(R) + 'px at ' + o.x + 'px ' + o.y + 'px)'],
+          }, { duration: 560, easing: 'cubic-bezier(.4, 0, .2, 1)', pseudoElement: '::view-transition-new(root)' });
+        }).catch(function () { /* skipped: the change still happened */ });
+        var done = function () { themeBusy = false; root.classList.remove('nd-vt'); };
+        vt.finished.then(done, done);
+        return vt.updateCallbackDone.then(function () { return result; }, function () { return result; });
+      }
+      root.classList.add('nd-theme-fade');
+      clearTimeout(fadeTimer);
+      fadeTimer = setTimeout(function () { root.classList.remove('nd-theme-fade'); }, 480);
+      return plain();
+    };
+  }
+
+  function installThemeTransitions() {
+    if (!N.theme || N.theme.__ndWrapped) return;
+    N.theme.__ndWrapped = true;
+    ['toggleMode', 'setMode', 'setStyle', 'cycleStyle'].forEach(function (name) {
+      if (typeof N.theme[name] === 'function') N.theme[name] = withThemeTransition(N.theme[name]);
+    });
+  }
+
+  /* ------------------------------------------------- the same note, two tabs */
+
+  var tabId = Math.random().toString(36).slice(2) + Date.now().toString(36);
+  var channel = null;
+  var lastRemote = new Map();
+  var sendTimers = new Map();
+  var warnedBoth = false;
+  var greeted = false;
+
+  function offerReload() {
+    try {
+      N.toast.info('Notes were added, renamed or removed in another Nodalis tab.', {
+        ms: 0, title: 'Changed in another tab', key: 'nd-tabs',
+        action: {
+          label: 'Reload', onClick: async function () {
+            pullEditor();
+            try { await flush('reload'); } catch (e) { /* fine */ }
+            try { if (N.vault && N.vault.flushNow) await N.vault.flushNow(); } catch (e) { /* fine */ }
+            location.reload();
+          },
+        },
+      });
+    } catch (e) { /* fine */ }
+  }
+
+  function onRemote(m) {
+    if (!m || m.from === tabId || !storeReady()) return;
+    if (m.t === 'hello') { try { channel.postMessage({ t: 'here', from: tabId }); } catch (e) { /* fine */ } return; }
+    if (m.t === 'here') {
+      if (!greeted) {
+        greeted = true;
+        try { N.toast.info('Nodalis is open in another tab too. What you type stays in step between them.', { ms: 5000, key: 'nd-tabs-hi' }); } catch (e) { /* fine */ }
+      }
+      return;
+    }
+    if (m.t === 'structure') { offerReload(); return; }
+    if (m.t !== 'note' || typeof m.c !== 'string') return;
+    var note = N.store.state.notes.get(m.id);
+    if (!note) { offerReload(); return; }
+    if (note.content === m.c) return;
+    if ((Number(note.updatedAt) || 0) > (Number(m.u) || 0)) return;
+    var open = false;
+    try { open = N.editor.currentNoteId() === m.id && N.editor.isDirty(); } catch (e) { open = false; }
+    if (open) {
+      if (!warnedBoth) {
+        warnedBoth = true;
+        try { N.toast.warn('This note is being typed in another tab as well. The most recent change is the one that stays — keep one tab for this note.', { ms: 8000, key: 'nd-tabs-both' }); } catch (e) { /* fine */ }
+      }
+      return;
+    }
+    lastRemote.set(m.id, m.c);
+    applyingRemote = true;
+    try { N.store.updateNoteContent(m.id, m.c, { remote: true, updatedAt: m.u }); }
+    catch (e) { /* fine */ }
+    finally { applyingRemote = false; }
+  }
+
+  function initTabs() {
+    if (typeof BroadcastChannel !== 'function' || channel) return;
+    try { channel = new BroadcastChannel('nodalis-tabs-v1'); } catch (e) { channel = null; return; }
+    channel.onmessage = function (ev) { try { onRemote(ev.data); } catch (e) { console.warn('[nodalis] tab sync', e); } };
+    bus.on('note:updated', function (note) {
+      if (!channel || !note || !note.id || applyingRemote) return;
+      if (lastRemote.get(note.id) === note.content) return;
+      clearTimeout(sendTimers.get(note.id));
+      sendTimers.set(note.id, setTimeout(function () {
+        sendTimers.delete(note.id);
+        var n = N.store.state.notes.get(note.id);
+        if (!n) return;
+        try { channel.postMessage({ t: 'note', from: tabId, id: n.id, c: n.content, u: n.updatedAt }); } catch (e) { /* fine */ }
+      }, 250));
+    });
+    ['note:created', 'note:deleted', 'note:renamed', 'note:trashed', 'note:restored', 'note:purged',
+      'folder:created', 'folder:deleted', 'folder:renamed'].forEach(function (evt) {
+      bus.on(evt, function () {
+        if (!channel || applyingRemote) return;
+        try { channel.postMessage({ t: 'structure', from: tabId }); } catch (e) { /* fine */ }
+      });
+    });
+    try { channel.postMessage({ t: 'hello', from: tabId }); } catch (e) { /* fine */ }
   }
 
   /* ------------------------------------------------------------ settings */
@@ -56915,30 +57946,38 @@ html[data-animations='none'] .loader.nd-boot * { animation: none !important; }
     if (description) info.appendChild(el('div.setting-desc', null, description));
     r.appendChild(info);
     var c = el('div.setting-control');
-    if (control) c.appendChild(control);
+    if (Array.isArray(control)) control.forEach(function (x) { c.appendChild(x); });
+    else if (control) c.appendChild(control);
     r.appendChild(c);
     return r;
   }
 
-  function numberSelect(key, options, onChange) {
+  function sectionEl(title, desc, cls) {
+    var wrap = el('div.settings-section' + (cls ? '.' + cls : ''));
+    wrap.appendChild(el('h3.settings-section-title', null, title));
+    if (desc) wrap.appendChild(el('p.settings-section-desc', null, desc));
+    return wrap;
+  }
+
+  /** A select whose values are numbers or strings, stored as such. */
+  function choice(key, current, options, onChange) {
     var field = el('select.field');
-    var current = String(setting(key));
     options.forEach(function (o) {
-      field.appendChild(el('option', { value: String(o.value), selected: current === String(o.value) }, o.label));
+      field.appendChild(el('option', { value: String(o.value), selected: String(current) === String(o.value) }, o.label));
     });
     field.addEventListener('change', async function () {
-      var v = Number(field.value);
+      var picked = options.filter(function (o) { return String(o.value) === field.value; })[0];
+      var v = picked ? picked.value : field.value;
       try { await N.store.setSetting(key, v); } catch (e) { /* fine */ }
       if (onChange) onChange(v);
     });
     return field;
   }
 
-  function boolSwitch(key, onChange) {
-    var value = setting(key) === true;
-    var sw = el('div.switch' + (value ? '.is-on' : ''), { role: 'switch', tabindex: '0', 'aria-checked': String(value) });
+  function onOff(key, value, onChange) {
+    var sw = el('div.switch' + (value ? '.is-on' : ''), { role: 'switch', tabindex: '0', 'aria-checked': String(!!value) });
     var flip = async function () {
-      var next = !(setting(key) === true);
+      var next = !sw.classList.contains('is-on');
       sw.classList.toggle('is-on', next);
       sw.setAttribute('aria-checked', String(next));
       try { await N.store.setSetting(key, next); } catch (e) { /* fine */ }
@@ -56960,16 +57999,14 @@ html[data-animations='none'] .loader.nd-boot * { animation: none !important; }
     return bits.join(' · ') + '.';
   }
 
-  function injectStorageRows(block) {
-    if (block.querySelector('.nd-row-autosave')) return;
-    var wrap = el('div.settings-section.nd-row-autosave');
-    wrap.appendChild(el('h3.settings-section-title', null, 'Autosave'));
-    wrap.appendChild(el('p.settings-section-desc', null,
-      'You never need to save by hand. Nodalis groups your typing and writes it in one go, which is kinder to your device’s storage — and it always saves instantly when you switch notes, switch apps, lock your phone or close.'));
+  function renderAutosave() {
+    var wrap = sectionEl('Autosave',
+      'You never need to save by hand. Nodalis groups your typing and writes it in one go, which is kinder to your device’s storage — and it always saves instantly when you switch notes, switch apps, lock your phone or close.',
+      'nd-row-autosave');
 
     wrap.appendChild(settingRow('Save to this device',
       'How often your typing is written to storage while you work. Only a sudden crash or power cut could cost the last few seconds. “After every pause” writes the most.',
-      numberSelect('autosaveInterval', [
+      choice('autosaveInterval', intervalSec(), [
         { value: 0, label: 'After every pause' },
         { value: 3, label: '3 seconds' },
         { value: 5, label: '5 seconds' },
@@ -56985,7 +58022,7 @@ html[data-animations='none'] .loader.nd-boot * { animation: none !important; }
       ghConnected()
         ? 'How often to back up while you work — only when something changed, never mid-sentence, and also when you leave the app. Off still backs up at start, on reconnect and by hand.'
         : 'Connect a repository under GitHub sync to use this.',
-      numberSelect('githubBackupEvery', [
+      choice('githubBackupEvery', Number(setting('githubBackupEvery')) || 0, [
         { value: 0, label: 'Off' },
         { value: 5, label: '5 minutes' },
         { value: 10, label: '10 minutes (recommended)' },
@@ -56996,56 +58033,122 @@ html[data-animations='none'] .loader.nd-boot * { animation: none !important; }
 
     wrap.appendChild(settingRow('Ask before closing if GitHub is behind',
       'Your notes are always safe on this device first. Turn this on if you often switch devices straight after closing.',
-      boolSwitch('warnGithubOnClose')));
+      onOff('warnGithubOnClose', setting('warnGithubOnClose') === true)));
 
-    var btn = el('button.btn', { type: 'button' }, 'Save and close');
-    btn.addEventListener('click', function () { saveAndClose(); });
-    var now = el('button.btn', { type: 'button', style: { marginRight: '8px' } }, 'Save now');
-    now.addEventListener('click', function () { saveNow(); });
-    var both = el('div', { style: { display: 'flex', flexWrap: 'wrap', gap: '8px', justifyContent: 'flex-end' } });
+    var now = el('button.btn', { type: 'button' }, 'Save now');
+    now.addEventListener('click', function () { saveNow({ github: 'always' }); });
+    var close = el('button.btn', { type: 'button' }, 'Save and close');
+    close.addEventListener('click', function () { saveAndClose(); });
+    var both = el('div.nd-btn-pair');
     both.appendChild(now);
-    both.appendChild(btn);
-    var row = settingRow('Save everything now',
-      'Writes to every place your notes are kept and shows you what was saved.', both);
+    both.appendChild(close);
+    var row = settingRow('Save everything now', 'Writes to every place your notes are kept and shows you what was saved.', both);
     row.querySelector('.setting-info').appendChild(el('div.nd-settings-status', null, statusLine()));
     wrap.appendChild(row);
-
-    var anchor = block.firstChild;
-    if (anchor && anchor.nextSibling) block.insertBefore(wrap, anchor.nextSibling);
-    else block.appendChild(wrap);
+    return wrap;
   }
 
-  function injectEditorRows(block) {
-    if (block.querySelector('.nd-row-glow')) return;
-    var value = setting('typingGlow') !== false;
-    var sw = el('div.switch' + (value ? '.is-on' : ''), { role: 'switch', tabindex: '0', 'aria-checked': String(value) });
-    var flip = async function () {
-      var next = !(setting('typingGlow') !== false);
-      sw.classList.toggle('is-on', next);
-      sw.setAttribute('aria-checked', String(next));
-      try { await N.store.setSetting('typingGlow', next); } catch (e) { /* fine */ }
-    };
-    sw.addEventListener('click', flip);
-    sw.addEventListener('keydown', function (e) { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); flip(); } });
-    block.appendChild(settingRow('Typing glow',
-      'When you are writing steadily, the word count lights up softly, with a brief shimmer as the words add up.',
-      sw, 'nd-row-glow'));
+  function renderMotivation() {
+    var box = el('div');
+    var a = sectionEl('Writing & motivation',
+      'Small, optional rewards for steady writing. Everything here can be switched off, and all of it steps aside if your device asks for reduced motion.');
+
+    var preview = el('button.btn.btn-sm', { type: 'button' }, 'Preview');
+    preview.addEventListener('click', function () {
+      var st = pref('glowStyle');
+      if (st === 'off') { N.toast.info('The glow is off.', { ms: 1600, key: 'nd-glow-prev' }); return; }
+      if (quietMotion()) { N.toast.info('Reduced motion is on, so only the soft tint shows.', { ms: 2400, key: 'nd-glow-prev' }); return; }
+      burst(preview.getBoundingClientRect(), { text: st === 'anime' ? '+' + (Number(pref('milestoneEvery')) || 50) + '!' : '' });
+    });
+    a.appendChild(settingRow('Typing glow',
+      'When you write steadily the word count lights up. Anime adds sparkles, speed lines and a combo badge at each milestone; Soft is a calm tint and shimmer.',
+      [choice('glowStyle', pref('glowStyle'), [
+        { value: 'anime', label: 'Anime ✦' },
+        { value: 'soft', label: 'Soft' },
+        { value: 'off', label: 'Off' },
+      ]), preview]));
+
+    a.appendChild(settingRow('Glow starts after',
+      'How long you need to keep typing before the glow appears.',
+      choice('flowAfter', Number(pref('flowAfter')) || 8, [
+        { value: 4, label: '4 seconds' },
+        { value: 8, label: '8 seconds' },
+        { value: 15, label: '15 seconds' },
+        { value: 30, label: '30 seconds' },
+      ])));
+
+    a.appendChild(settingRow('Celebrate every',
+      'A milestone pop each time you add this many words in one stretch.',
+      choice('milestoneEvery', Number(pref('milestoneEvery')) || 50, [
+        { value: 25, label: '25 words' },
+        { value: 50, label: '50 words' },
+        { value: 100, label: '100 words' },
+        { value: 250, label: '250 words' },
+      ])));
+
+    a.appendChild(settingRow('Combo badge',
+      'FLOW → ON FIRE → IN THE ZONE… floating above the word count while you keep going (Anime style).',
+      onOff('comboBadge', pref('comboBadge') !== false)));
+    box.appendChild(a);
+
+    var b = sectionEl('Today', null);
+    rollDay();
+    b.appendChild(settingRow('Words added today',
+      'A small “+N today” beside the word count — words you added today across all notes. Only typing counts, not imports or syncs.',
+      onOff('todayCounter', pref('todayCounter') !== false, function () { paintToday(); })));
+    b.appendChild(settingRow('Daily target',
+      'Reach it and Nodalis celebrates — once a day. The counter shows a small ring filling up.',
+      choice('dailyTarget', targetWords(), [
+        { value: 0, label: 'No target' },
+        { value: 250, label: '250 words' },
+        { value: 500, label: '500 words' },
+        { value: 750, label: '750 words' },
+        { value: 1000, label: '1,000 words' },
+        { value: 1500, label: '1,500 words' },
+        { value: 2000, label: '2,000 words' },
+        { value: 3000, label: '3,000 words' },
+      ], function (v) {
+        rollDay();
+        today.hit = Number(v) > 0 && today.w >= Number(v);
+        todayDirty = true; saveToday(); paintToday();
+      })));
+    var tgt = targetWords();
+    b.appendChild(el('p.nd-settings-status', null,
+      'So far today: ' + today.w.toLocaleString() + ' words' + (tgt ? ' of ' + tgt.toLocaleString() + (today.hit ? ' — done!' : '') : '') + '.'));
+    box.appendChild(b);
+    return box;
   }
 
-  function sweepSettings() {
-    var storage = document.getElementById('settings-storage');
-    if (storage) { try { injectStorageRows(storage); } catch (e) { console.warn('[nodalis] autosave settings', e); } }
-    var editor = document.getElementById('settings-editor');
-    if (editor) { try { injectEditorRows(editor); } catch (e) { console.warn('[nodalis] glow setting', e); } }
+  function renderLookExtras() {
+    var a = sectionEl('Motion', null, 'nd-row-look');
+    a.appendChild(settingRow('Switching light and dark',
+      'Circular reveal grows the new look out from where you clicked; Soft fade cross-fades the colours.',
+      choice('themeTransition', pref('themeTransition'), [
+        { value: 'reveal', label: 'Circular reveal' },
+        { value: 'fade', label: 'Soft fade' },
+        { value: 'off', label: 'Instant' },
+      ])));
+    a.appendChild(settingRow('Loading screen',
+      'Signature draws the mark with a glow and a ripple; Minimal is just the mark and a progress line.',
+      choice('loaderStyle', pref('loaderStyle'), [
+        { value: 'signature', label: 'Signature' },
+        { value: 'minimal', label: 'Minimal' },
+      ], function (v) { try { localStorage.setItem('nodalis.loaderStyle.v1', String(v)); } catch (e) { /* fine */ } })));
+    return a;
   }
 
-  function watchSettings() {
-    var host = document.getElementById('settings-body');
-    if (!host) return;
-    sweepSettings();
-    try {
-      new MutationObserver(function () { sweepSettings(); }).observe(host, { childList: true, subtree: true });
-    } catch (e) { /* the rows still appear on first render */ }
+  function renderEditorExtras() {
+    var a = sectionEl('Reading', null, 'nd-row-read');
+    a.appendChild(settingRow('Line breaks in Read view',
+      'Keep shows each line where you typed it, like Obsidian. Join follows strict markdown: lines without a blank line between them become one paragraph.',
+      choice('readLineBreaks', pref('readLineBreaks') === false ? 'join' : 'keep', [
+        { value: 'keep', label: 'Keep my line breaks' },
+        { value: 'join', label: 'Join into paragraphs' },
+      ], async function (v) {
+        try { await N.store.setSetting('readLineBreaks', v !== 'join'); } catch (e) { /* fine */ }
+        try { if (N.editor && N.editor.renderPreview) N.editor.renderPreview(); } catch (e) { /* fine */ }
+      })));
+    return a;
   }
 
   /* --------------------------------------------------------------- start */
@@ -57068,8 +58171,23 @@ html[data-animations='none'] .loader.nd-boot * { animation: none !important; }
     saveNow: saveNow,
     places: places,
     githubBackup: ghBackup,
+    renderAutosave: renderAutosave,
+    renderMotivation: renderMotivation,
+    renderLookExtras: renderLookExtras,
+    renderEditorExtras: renderEditorExtras,
+    burst: burst,
+    today: function () { rollDay(); return { words: today.w, target: targetWords(), reached: today.hit }; },
     version: '10.9.3',
   };
+
+  /* Mirror the loading-screen choice where the loader can read it before
+     anything else has loaded. */
+  bus.on('settings:changed', function () {
+    try {
+      var v = String(pref('loaderStyle'));
+      if (localStorage.getItem('nodalis.loaderStyle.v1') !== v) localStorage.setItem('nodalis.loaderStyle.v1', v);
+    } catch (e) { /* fine */ }
+  });
 
   bus.on('note:active', function () {
     /* After the editor has pulled the previous note's text into memory. */
@@ -57078,17 +58196,24 @@ html[data-animations='none'] .loader.nd-boot * { animation: none !important; }
   bus.on('settings:changed', function () { paintPip(); });
   bus.on('vault:status', function () { paintPip(); });
 
+  installThemeTransitions();
+
   bus.on('app:ready', function () {
     restoreRescue().catch(function (e) { console.warn('[nodalis] rescue', e); });
+    try { installThemeTransitions(); } catch (e) { console.warn('[nodalis] theme motion', e); }
     try { initSteady(); } catch (e) { console.warn('[nodalis] steady typing', e); }
     try { initGlow(); } catch (e) { console.warn('[nodalis] typing glow', e); }
-    try { watchSettings(); } catch (e) { /* cosmetic */ }
+    try { initToday(); } catch (e) { console.warn('[nodalis] today', e); }
+    try { initTypewriter(); } catch (e) { console.warn('[nodalis] typewriter', e); }
+    try { initTabs(); } catch (e) { console.warn('[nodalis] tabs', e); }
     try {
       N.commands.registerMany([
         { id: 'app.saveEverything', title: 'Save everything now', group: 'App', icon: 'save',
-          run: function () { saveNow(); } },
+          run: function () { saveNow({ github: 'always' }); } },
         { id: 'app.saveAndClose', title: 'Save and close Nodalis', group: 'App', icon: 'save',
           run: function () { saveAndClose(); } },
+        { id: 'app.motivation', title: 'Writing & motivation settings', group: 'App', icon: 'sparkle',
+          run: function () { N.settings.open('motivation'); } },
       ]);
     } catch (e) { /* palette still works without these */ }
     setInterval(function () { ghBackup('interval'); }, 30000);
