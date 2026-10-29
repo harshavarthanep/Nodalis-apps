@@ -19038,6 +19038,19 @@ https://github.com/nodeca/pako/blob/main/LICENSE
     core.setAttribute('class', 'ndb-core');
     core.setAttribute('cx', '32'); core.setAttribute('cy', '32'); core.setAttribute('r', '3.6');
     svg.appendChild(core);
+    /* Three motes circling while the app gets ready. */
+    const orbit = document.createElementNS(NS, 'g');
+    orbit.setAttribute('class', 'ndb-orbit');
+    [0, 1, 2].forEach(function (i) {
+      const a = (Math.PI * 2 * i) / 3 - Math.PI / 2;
+      const m = document.createElementNS(NS, 'circle');
+      m.setAttribute('class', 'ndb-mote');
+      m.setAttribute('cx', (32 + 30 * Math.cos(a)).toFixed(2));
+      m.setAttribute('cy', (32 + 30 * Math.sin(a)).toFixed(2));
+      m.setAttribute('r', String(1.9 - i * 0.4));
+      orbit.appendChild(m);
+    });
+    svg.appendChild(orbit);
     stage.appendChild(svg);
     root.appendChild(stage);
 
@@ -25493,6 +25506,7 @@ https://github.com/nodeca/pako/blob/main/LICENSE
         const rect = canvas.getBoundingClientRect();
         const cx = (e.touches[0].clientX + e.touches[1].clientX) / 2 - rect.left;
         const cy = (e.touches[0].clientY + e.touches[1].clientY) / 2 - rect.top;
+        userView = true;
         zoomAt(U.clamp(pinchStart.k * ratio, 0.12, 5), cx, cy);
       }
     }, { passive: false });
@@ -25668,11 +25682,12 @@ https://github.com/nodeca/pako/blob/main/LICENSE
     // Frame it once the layout has stopped moving. Fitting immediately after
     // build() framed the seed positions, not the settled ones, which left small
     // graphs as a few specks in the middle of an empty canvas.
-    if (pendingFit && alpha < 0.06 && !dragging && nodes.length) {
+    if (pendingFit && alpha < 0.06 && !dragging && !hovered && !userView && nodes.length) {
       pendingFit = false;
       fit();
     }
     draw();
+    if (tooltip && hovered) anchorTooltip(hovered);
     raf = requestAnimationFrame(tick);
   }
 
@@ -25723,7 +25738,7 @@ https://github.com/nodeca/pako/blob/main/LICENSE
     });
 
     nodes.forEach(function (n) {
-      if (n === dragging) { n.vx = 0; n.vy = 0; return; }
+      if (n === dragging || n === hovered) { n.vx = 0; n.vy = 0; return; }
       n.vx += (cx - n.x) * GRAVITY * alpha;
       n.vy += (cy - n.y) * GRAVITY * alpha;
       n.vx *= DAMPING; n.vy *= DAMPING;
@@ -25732,6 +25747,20 @@ https://github.com/nodeca/pako/blob/main/LICENSE
     });
 
     separate(grid, cell);
+    holdStill();
+  }
+
+  /*
+   * v10.9.4: THE NODE UNDER YOUR POINTER STAYS UNDER YOUR POINTER.
+   *
+   * The collision pass above pushed every node apart - including the one you
+   * were dragging, which then slid away from the pointer, and the one you
+   * were hovering, which drifted out from under its own tooltip. Whatever
+   * you are holding or pointing at is put back exactly where you have it.
+   */
+  function holdStill() {
+    if (dragging && dragging.__tx !== undefined) { dragging.x = dragging.__tx; dragging.y = dragging.__ty; }
+    if (hovered && hovered !== dragging && hovered.__hx !== undefined) { hovered.x = hovered.__hx; hovered.y = hovered.__hy; }
   }
 
   /**
@@ -25967,6 +25996,7 @@ https://github.com/nodeca/pako/blob/main/LICENSE
     const hit = nodeAt(world);
     if (hit) {
       dragging = hit;
+      hit.__tx = hit.x; hit.__ty = hit.y;
       dragging.dragOffsetX = hit.x - world.x;
       dragging.dragOffsetY = hit.y - world.y;
       dragging.moved = false;
@@ -25974,6 +26004,9 @@ https://github.com/nodeca/pako/blob/main/LICENSE
       start();
     } else {
       panning = { x: e.clientX - view.x, y: e.clientY - view.y };
+      userView = true;
+      hovered = null;
+      hideTooltip();
       canvas.style.cursor = 'grabbing';
     }
   }
@@ -25983,6 +26016,10 @@ https://github.com/nodeca/pako/blob/main/LICENSE
       const world = toWorld(e.clientX, e.clientY);
       dragging.x = world.x + dragging.dragOffsetX;
       dragging.y = world.y + dragging.dragOffsetY;
+      dragging.__tx = dragging.__hx = dragging.x;
+      dragging.__ty = dragging.__hy = dragging.y;
+      if (!running) draw();
+      if (tooltip && hovered === dragging) anchorTooltip(dragging);
       dragging.moved = true;
       alpha = Math.max(alpha, 0.25);
       return;
@@ -25997,18 +26034,20 @@ https://github.com/nodeca/pako/blob/main/LICENSE
     const hit = nodeAt(world);
     if (hit !== hovered) {
       hovered = hit;
+      if (hit) { hit.__hx = hit.x; hit.__hy = hit.y; }
       canvas.style.cursor = hit ? 'pointer' : 'grab';
       if (hit) showTooltip(hit, e.clientX, e.clientY);
       else hideTooltip();
       draw();
     } else if (hit && tooltip) {
-      positionTooltip(e.clientX, e.clientY);
+      anchorTooltip(hit);
     }
   }
 
   function onPointerUp(e) {
     if (dragging) {
       if (!dragging.moved) openNode(dragging);
+      else { dragging.__hx = dragging.x; dragging.__hy = dragging.y; }
       dragging = null;
     }
     panning = null;
@@ -26031,6 +26070,7 @@ https://github.com/nodeca/pako/blob/main/LICENSE
   function onWheel(e) {
     e.preventDefault();
     const rect = canvas.getBoundingClientRect();
+    userView = true;
     const factor = e.deltaY < 0 ? 1.12 : 0.89;
     zoomAt(U.clamp(view.k * factor, 0.12, 5), e.clientX - rect.left, e.clientY - rect.top);
   }
@@ -26042,6 +26082,7 @@ https://github.com/nodeca/pako/blob/main/LICENSE
     view.x = px - worldX * k;
     view.y = py - worldY * k;
     draw();
+    if (tooltip && hovered) anchorTooltip(hovered);
   }
 
   function zoomBy(factor) {
@@ -26093,7 +26134,7 @@ https://github.com/nodeca/pako/blob/main/LICENSE
     }
 
     wrap.appendChild(tooltip);
-    positionTooltip(x, y);
+    anchorTooltip(node);
   }
 
   function positionTooltip(x, y) {
@@ -26101,6 +26142,30 @@ https://github.com/nodeca/pako/blob/main/LICENSE
     const rect = wrap.getBoundingClientRect();
     tooltip.style.left = (x - rect.left) + 'px';
     tooltip.style.top = (y - rect.top - 6) + 'px';
+  }
+
+  /* v10.9.4: true once the person pans or zooms - automatic framing stops. */
+  let userView = false;
+
+  /*
+   * v10.9.4: the tooltip sits just above the node it describes (below it if
+   * there is no room), kept inside the graph, and follows the node while the
+   * layout moves - it used to stay wherever the pointer first was.
+   */
+  function anchorTooltip(node) {
+    if (!tooltip || !wrap || !node) return;
+    const W = wrap.clientWidth, H = wrap.clientHeight;
+    const sx = node.x * view.k + view.x;
+    const sy = node.y * view.k + view.y;
+    const r = Math.max(4, (node.r || 6) * view.k);
+    const tw = tooltip.offsetWidth || 160, th = tooltip.offsetHeight || 48;
+    const left = Math.min(Math.max(sx, tw / 2 + 8), Math.max(tw / 2 + 8, W - tw / 2 - 8));
+    let top = sy - r - 10;
+    let below = false;
+    if (top - th < 8) { top = Math.min(H - th - 8, sy + r + 10); below = true; }
+    tooltip.style.left = left + 'px';
+    tooltip.style.top = top + 'px';
+    tooltip.classList.toggle('is-below', below);
   }
 
   function hideTooltip() {
@@ -56492,6 +56557,66 @@ html.nd-theme-fade, html.nd-theme-fade *, html.nd-theme-fade *::before, html.nd-
    section still glide - they ask for it explicitly. */
 #settings-body { scroll-behavior: auto !important; }
 
+/* =========================================================================
+ * v10.9.4 (second pass)
+ * ========================================================================= */
+
+/* ---- effect colours that read on light pages and dark ones --------------- */
+:root { --nd-c1: #e8457f; --nd-c2: #e0a100; --nd-c3: #0e9fb3; --nd-c4: #7c4dff; --nd-c5: #16a34a; }
+[data-mode='dark'] { --nd-c1: #ff6fb0; --nd-c2: #ffd166; --nd-c3: #5ce1e6; --nd-c4: #b388ff; --nd-c5: #7cf29c; }
+[data-mode='light'] .nd-pop {
+  color: var(--accent);
+  -webkit-text-stroke: 0;
+  text-shadow: 0 1px 0 #fff, 0 0 14px color-mix(in srgb, var(--nd-c1) 45%, transparent), 2px 2px 0 color-mix(in srgb, var(--nd-c2) 75%, transparent);
+}
+[data-mode='light'] #word-count.nd-flow.nd-anime { box-shadow: 0 0 0 1px rgba(255, 255, 255, .6), 0 4px 16px -4px color-mix(in srgb, var(--nd-c1) 55%, transparent); }
+
+/* ---- split view: both sides have the same room below the last line, so
+        line-by-line sync holds all the way to the end -------------------- */
+.split[data-mode='split'] .split-preview .prose { padding-bottom: 40vh; }
+.split[data-mode='split']:has(.split-editor.is-typewriter) .split-preview .prose { padding-bottom: 62vh; }
+
+/* ---- knowledge graph tooltip: anchored above its node ------------------- */
+.graph-tooltip { transform: translate(-50%, -100%); animation: nd-tip-in 160ms ease-out both; }
+.graph-tooltip.is-below { transform: translate(-50%, 0); }
+.graph-tooltip::after {
+  content: ''; position: absolute; left: 50%; bottom: -5px; width: 10px; height: 10px; margin-left: -5px;
+  background: inherit; transform: rotate(45deg); border-radius: 2px;
+}
+.graph-tooltip.is-below::after { bottom: auto; top: -5px; }
+@keyframes nd-tip-in { from { opacity: 0; } to { opacity: 1; } }
+
+/* ---- expressive touches (body.nd-motion only when motion is Full) ------- */
+body.nd-motion .view.is-active { animation: nd-view-in 280ms cubic-bezier(.2, .8, .2, 1) both; }
+@keyframes nd-view-in { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+body.nd-motion .nd-note-in .note-editor,
+body.nd-motion .nd-note-in .split-preview .prose { animation: nd-note-in 340ms cubic-bezier(.2, .8, .2, 1) both; }
+@keyframes nd-note-in { from { opacity: 0; transform: translateY(5px); } to { opacity: 1; transform: none; } }
+.nd-tick-ring {
+  position: absolute; width: 10px; height: 10px; margin: -5px 0 0 -5px; border-radius: 50%;
+  border: 2px solid var(--accent); animation: nd-tick 620ms cubic-bezier(.2, .8, .2, 1) forwards;
+}
+@keyframes nd-tick { from { transform: scale(1); opacity: .9; } to { transform: scale(4.2); opacity: 0; } }
+body.nd-motion .save-pip.is-saved .dot { animation: nd-pip-pop 420ms cubic-bezier(.2, 1.6, .3, 1); }
+@keyframes nd-pip-pop { 0% { transform: scale(.4); } 100% { transform: scale(1); } }
+
+/* ---- loading screen: motes circling while it gets ready ------------------ */
+.loader.nd-boot .ndb-orbit { display: none; }
+.loader.nd-boot.ndb-sig .ndb-orbit {
+  display: inline; transform-box: view-box; transform-origin: 32px 32px; opacity: 0;
+  animation: ndb-fade 400ms ease 650ms forwards, ndb-spin 2.2s linear 650ms infinite;
+}
+.loader.nd-boot .ndb-mote { fill: var(--accent); }
+.loader.nd-boot .ndb-mote:nth-child(2) { opacity: .7; }
+.loader.nd-boot .ndb-mote:nth-child(3) { opacity: .45; }
+@keyframes ndb-spin { to { transform: rotate(360deg); } }
+
+@media (prefers-reduced-motion: reduce) {
+  body.nd-motion .view.is-active, body.nd-motion .nd-note-in .note-editor,
+  body.nd-motion .nd-note-in .split-preview .prose, .graph-tooltip { animation: none !important; }
+  .loader.nd-boot .ndb-orbit { display: none !important; }
+}
+
 </style>
 <script id="nd-v1094-script">
 (function () {
@@ -57447,6 +57572,8 @@ html.nd-theme-fade, html.nd-theme-fade *, html.nd-theme-fade *::before, html.nd-
     themeTransition: 'reveal', // reveal | fade | off
     loaderStyle: 'signature',  // signature | minimal
     readLineBreaks: true,
+    typewriterStart: 'reach',  // reach | first
+    motionExtras: true,        // view entrances, note fades, task pops
   };
 
   function pref(key) {
@@ -57480,7 +57607,9 @@ html.nd-theme-fade, html.nd-theme-fade *, html.nd-theme-fade *::before, html.nd-
     return fxLayer;
   }
 
-  var PALETTE = ['var(--accent)', '#ff5fa2', '#ffd166', '#5ce1e6', '#b388ff', '#7cf29c'];
+  /* Colours come from CSS variables with separate light and dark values, so
+     every sparkle stays visible on a white page and a black one. */
+  var PALETTE = ['var(--accent)', 'var(--nd-c1)', 'var(--nd-c2)', 'var(--nd-c3)', 'var(--nd-c4)', 'var(--nd-c5)'];
 
   /** A burst of sparkles and speed lines from the centre of a rectangle. */
   function burst(rect, opts) {
@@ -57628,7 +57757,20 @@ html.nd-theme-fade, html.nd-theme-fade *, html.nd-theme-fade *::before, html.nd-
     if (!ta) return;
     var on = false;
     try { on = N.store.state.settings.typewriter === true; } catch (e) { on = false; }
-    if (!on) { if (ta.style.paddingTop) ta.style.paddingTop = ''; return; }
+    var mode = '';
+    try { mode = N.editor.getMode(); } catch (e) { mode = ''; }
+    /* v10.9.4: only in Write, and only if you asked for the first line to be
+       centred too. In Split the two sides must start level, and by default
+       the caret travels down to its height the way most writing apps do. */
+    if (!on || mode !== 'edit' || pref('typewriterStart') !== 'first') {
+      if (ta.style.paddingTop) {
+        var st0 = ta.scrollTop, had = parseFloat(ta.style.paddingTop) || 0;
+        ta.style.paddingTop = '';
+        var now0 = parseFloat(getComputedStyle(ta).paddingTop) || 0;
+        ta.scrollTop = Math.max(0, st0 - (had - now0));
+      }
+      return;
+    }
     var where = (N.store.state.settings.typewriterAnchor || 'middle');
     var frac = where === 'top' ? 0.28 : (where === 'low' ? 0.62 : 0.44);
     var h = ta.clientHeight || Math.round(window.innerHeight * 0.7);
@@ -57646,6 +57788,24 @@ html.nd-theme-fade, html.nd-theme-fade *, html.nd-theme-fade *::before, html.nd-
 
   function initTypewriter() {
     paintTypewriterPad();
+    var split = document.getElementById('editor-split');
+    if (split) {
+      try {
+        new MutationObserver(function () { requestAnimationFrame(paintTypewriterPad); })
+          .observe(split, { attributes: true, attributeFilter: ['data-mode'] });
+      } catch (e) { /* settings changes still repaint */ }
+    }
+    /* Split: the preview redraws while you type and its heights change; put
+       it back level with the line you are writing. */
+    bus.on('preview:rendered', function () {
+      try {
+        if (N.editor.getMode() !== 'split') return;
+        if (N.steady && N.steady.previewIntent && N.steady.previewIntent()) return;
+        var ta = N.editor.getTextarea();
+        if (!ta || document.activeElement !== ta) return;
+        requestAnimationFrame(function () { try { N.editor.syncFromEditor(); } catch (e) { /* fine */ } });
+      } catch (e) { /* fine */ }
+    });
     bus.on('settings:changed', function () { requestAnimationFrame(paintTypewriterPad); });
     bus.on('note:active', function () { requestAnimationFrame(paintTypewriterPad); });
     window.addEventListener('resize', U.debounce ? U.debounce(paintTypewriterPad, 150) : paintTypewriterPad, { passive: true });
@@ -57779,6 +57939,49 @@ html.nd-theme-fade, html.nd-theme-fade *, html.nd-theme-fade *::before, html.nd-
     bus.on('settings:changed', paintToday);
     /* Midnight passes while the app is open. */
     setInterval(function () { var k = dayKey(); if (today.d !== k) { rollDay(); saveToday(); paintToday(); } }, 60000);
+  }
+
+  /* ------------------------------------------------------ motion extras */
+
+  function extrasOn() {
+    if (pref('motionExtras') === false || quietMotion()) return false;
+    try { return (N.store.state.settings.animations || 'full') === 'full'; } catch (e) { return true; }
+  }
+
+  function paintMotionFlag() {
+    try { document.body.classList.toggle('nd-motion', extrasOn()); } catch (e) { /* fine */ }
+  }
+
+  function initMotion() {
+    paintMotionFlag();
+    bus.on('settings:changed', paintMotionFlag);
+    /* A note opening fades its text in; a view slides up into place. */
+    bus.on('note:active', function () {
+      if (!extrasOn()) return;
+      var sp = document.getElementById('editor-split');
+      if (!sp) return;
+      sp.classList.remove('nd-note-in');
+      void sp.offsetWidth;
+      sp.classList.add('nd-note-in');
+      setTimeout(function () { sp.classList.remove('nd-note-in'); }, 420);
+    });
+    /* Ticking a task anywhere: a small pop, and sparkles in the Anime style. */
+    document.addEventListener('click', function (e) {
+      var t = e.target;
+      if (!t || !t.matches || !t.matches('input[type="checkbox"]')) return;
+      if (!t.closest('.prose, #view-tasks, #view-matrix, .sticky-wall, .cal-agenda')) return;
+      var r = t.getBoundingClientRect();
+      var nowChecked = t.checked;      // already toggled when the click arrives
+      setTimeout(function () {
+        if (!nowChecked || !extrasOn()) return;
+        if (pref('glowStyle') === 'anime') burst(r, { text: '' });
+        var ring = el('i.nd-tick-ring');
+        ring.style.left = (r.left + r.width / 2) + 'px';
+        ring.style.top = (r.top + r.height / 2) + 'px';
+        layer().appendChild(ring);
+        setTimeout(function () { if (ring.parentNode) ring.parentNode.removeChild(ring); }, 700);
+      }, 0);
+    }, true);
   }
 
   /* ------------------------------------------------- light and dark, kindly */
@@ -58128,6 +58331,9 @@ html.nd-theme-fade, html.nd-theme-fade *, html.nd-theme-fade *::before, html.nd-
         { value: 'fade', label: 'Soft fade' },
         { value: 'off', label: 'Instant' },
       ])));
+    a.appendChild(settingRow('Expressive touches',
+      'Views glide into place, notes fade in, ticked tasks pop. Follows Interface motion: off when motion is Reduced or None.',
+      onOff('motionExtras', pref('motionExtras') !== false, function () { paintMotionFlag(); })));
     a.appendChild(settingRow('Loading screen',
       'Signature draws the mark with a glow and a ripple; Minimal is just the mark and a progress line.',
       choice('loaderStyle', pref('loaderStyle'), [
@@ -58138,7 +58344,13 @@ html.nd-theme-fade, html.nd-theme-fade *, html.nd-theme-fade *::before, html.nd-
   }
 
   function renderEditorExtras() {
-    var a = sectionEl('Reading', null, 'nd-row-read');
+    var a = sectionEl('Reading and typewriter', null, 'nd-row-read');
+    a.appendChild(settingRow('Typewriter starts',
+      'With typewriter scrolling on: “When the caret reaches its height” keeps the top of a note where it is; “From the first line” adds room above so even the first line sits at that height (Write view only).',
+      choice('typewriterStart', pref('typewriterStart'), [
+        { value: 'reach', label: 'When the caret reaches its height' },
+        { value: 'first', label: 'From the first line' },
+      ], function () { requestAnimationFrame(paintTypewriterPad); })));
     a.appendChild(settingRow('Line breaks in Read view',
       'Keep shows each line where you typed it, like Obsidian. Join follows strict markdown: lines without a blank line between them become one paragraph.',
       choice('readLineBreaks', pref('readLineBreaks') === false ? 'join' : 'keep', [
@@ -58205,6 +58417,7 @@ html.nd-theme-fade, html.nd-theme-fade *, html.nd-theme-fade *::before, html.nd-
     try { initGlow(); } catch (e) { console.warn('[nodalis] typing glow', e); }
     try { initToday(); } catch (e) { console.warn('[nodalis] today', e); }
     try { initTypewriter(); } catch (e) { console.warn('[nodalis] typewriter', e); }
+    try { initMotion(); } catch (e) { console.warn('[nodalis] motion', e); }
     try { initTabs(); } catch (e) { console.warn('[nodalis] tabs', e); }
     try {
       N.commands.registerMany([
